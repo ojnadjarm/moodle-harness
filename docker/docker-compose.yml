@@ -1,0 +1,57 @@
+# Moodle dev stack (single-stack layout). Layout expected next to this file:
+#   http/           Moodle code (5.1+: docroot is http/public, see 000-default.conf)
+#   moodledata/     data dir
+#   behatfaildumps/
+# Start with: docker compose up -d   (no restart policy on purpose — see README)
+services:
+  db:
+    image: mysql
+    command: >
+                --character-set-server=utf8mb4
+                --collation-server=utf8mb4_bin
+                --skip-log-bin
+    environment:
+      MYSQL_ROOT_PASSWORD: "m@0dl3ing"
+      MYSQL_USER: moodle
+      MYSQL_PASSWORD: "m@0dl3ing"
+      MYSQL_DATABASE: moodle
+    ports:
+      - 3306:3306
+  mailhog:
+    image: mailhog/mailhog
+    logging:
+      driver: 'none'
+    ports:
+      - 1025:1025
+      - 8025:8025
+  app:
+    image: moodlehq/moodle-php-apache:8.4
+    depends_on:
+      - db
+    ports:
+      - 80:80
+    environment:
+      MOODLE_DATABASE_HOST: db
+      MOODLE_DATABASE_USER: moodle
+      MOODLE_DATABASE_PASSWORD: "m@0dl3ing"
+      MOODLE_DATABASE_NAME: moodle
+      MOODLE_DOCKER_BROWSER: chrome
+      MOODLE_DOCKER_WEB_HOST: "moodle-dev.localhost"
+    volumes:
+      - ./http:/var/www/html
+      - ./docker/000-default.conf:/etc/apache2/sites-enabled/000-default.conf:ro
+      - ./moodledata:/var/www/moodledata
+      - ./behatfaildumps:/var/www/behatdata/behatfaildumps
+  selenium:
+    image: moodlehq/selenium-standalone-chrome:96.0-moodlehq
+    container_name: "seleniumwp"
+    hostname: selenium
+    privileged: true
+    shm_size: 2g
+    ports:
+      - 4444:4444
+      - 5900:5900
+      - 7900:7900
+    volumes:
+      - /dev/shm:/dev/shm
+      - ./behatfaildumps:/var/www/behatdata/behatfaildumps

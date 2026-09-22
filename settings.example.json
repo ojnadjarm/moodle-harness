@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/moodle-session-start.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/moodle-stop-reminder.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": []
+  },
+  "outputStyle": "Concise",
+  "effortLevel": "medium",
+  "autoCompactEnabled": true,
+  "autoCompactWindow": 300000
+}
