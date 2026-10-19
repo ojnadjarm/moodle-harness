@@ -16,6 +16,25 @@ composer or phpcs**; those live on the **host** and survive container rebuilds. 
 
 `$ARGUMENTS` selects the mode: `quick` (default — phpcs + PHPUnit) or `full` (whole suite).
 
+## Scripts (use these before hand-written commands)
+
+`S=~/.claude/skills/moodle-ci/scripts`
+- `$S/mtest phpunit [plugin-dir|file_test.php] [--filter X] [args]` — finds plugin, container
+  and dirroot; runs `init.php --disable-composer` only when `util.php --diag` says stale; always
+  `--testsuite <component>_testsuite` (a single file becomes `--filter <class>`, so base
+  testcases in `tests/` load); prints failures + summary, full log path last. Run from any cwd.
+- `$S/mtest behat [plugin-dir|file.feature|dir] [--tags X] [args]` — same for Behat (init when
+  stale or not enabled; default target `<plugin>/tests/behat`). `--parallel N` splits features over N
+  sites (cap 8 minus busy Selenium sessions; 6 features: 2.4× faster at N=6).
+- `$S/phpcs-delta [--base REF] [paths]` — only the violations your change adds: each changed
+  or new `.php` file vs the merge-base with REF (default `HEAD`), matched by sniff + message +
+  line text. Exit 1 on new errors. Use it for scope-only work instead of whole-plugin
+  codechecker output or hand-made `git show` base copies.
+- `$S/mfixture add|rm|with <env> <plugin-dir|component> [-- cmd]` — fixture plugins in dev envs
+  (5.2/5.3; refuses 4.5/vass): `add` copies + `upgrade.php --non-interactive`, `rm` runs
+  `uninstall_plugins.php --run` then deletes the dir, `with` removes it on exit, error or TERM.
+- `$S/mexec <script.php|cmd> [args]` — run any Moodle CLI as www-data in the container mounting the cwd (public/-aware); use instead of hand-written `docker compose exec`.
+
 ## 0. Discover environment (do this first)
 
 ```bash

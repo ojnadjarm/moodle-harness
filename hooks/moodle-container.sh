@@ -10,12 +10,12 @@ command -v docker >/dev/null 2>&1 || exit 1
 # Host dirroot = where phpunit runs = the composer root holding vendor/bin/phpunit.
 # Version-agnostic: this is repo root on 4.x/5.0 and still repo root on 5.1+ (code under
 # public/). Keying on vendor/bin/phpunit avoids stopping at public/, which also has config.php
-# under the 5.1 layout. Fallback: a Moodle root with both config.php and a vendor/ dir.
+# under the 5.1 layout. Fallback: config.php beside vendor/ or composer.json (not yet installed).
 dirroot=""
 d="$host_path"
 for _ in $(seq 1 10); do
     [ -z "$d" ] && break
-    if [ -f "$d/vendor/bin/phpunit" ] || { [ -f "$d/config.php" ] && [ -d "$d/vendor" ]; }; then
+    if [ -f "$d/vendor/bin/phpunit" ] || { [ -f "$d/config.php" ] && { [ -d "$d/vendor" ] || [ -f "$d/composer.json" ]; }; }; then
         dirroot="$d"; break
     fi
     [ "$d" = "/" ] && break

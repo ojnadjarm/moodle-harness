@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# Run PHPUnit or Behat for one Moodle plugin in its container; init only when stale, compact output.
+# Usage: mtest phpunit|behat [path] [--filter X | --tags X] [--parallel N] [extra runner args]
+#   path: plugin dir, a *_test.php file, a .feature file or a behat dir (default: $PWD).
+#   --parallel N (behat): N sites via init.php --parallel, features round-robin over them; N is capped by
+#     MTEST_SELENIUM_CAP (default 8) minus busy sessions on MTEST_SELENIUM (default http://localhost:4444/wd/hub).
+# Exit: the runner's exit code; 2 usage, 3 no container. Full log path is printed last.
+set -uo pipefail
+
+die() { echo "mtest: $2" >&2; exit "$1"; }
+mode="${1:-}"; shift || true
+case "$mode" in
+    phpunit|behat) ;;
+    -h|--help) sed -n '2,/^# Exit/s/^# \{0,1\}//p' "$0"; exit 0;;
+    *) die 2 "usage: mtest phpunit|behat [path] [--filter X|--tags X] [--parallel N] [args]";;
+esac
+
+target="$PWD"
+if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then target="$(realpath "$1")"; shift; fi
+[ -e "$target" ] || die 2 "no such path: $target"
+
+par=1 rest=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --parallel) par="${2:-}"; shift 2 || shift;;
+        --parallel=*) par="${1#*=}"; shift;;
+        *) rest+=("$1"); shift;;
+    esac
+done
+[[ "$par" =~ ^[1-9][0-9]*$ ]] || die 2 "--parallel needs a positive number"
+set -- ${rest[@]+"${rest[@]}"}
+
+plugin="$target"; [ -f "$plugin" ] && plugin="$(dirname "$plugin")"
+while [ "$plugin" != / ] && ! grep -qs '\$plugin->component' "$plugin/version.php"; do plugin="$(dirname "$plugin")"; done
+[ "$plugin" = / ] && die 2 "no plugin version.php above $target"
+comp="$(grep -hoP "\\\$plugin->component\s*=\s*'\K[^']+" "$plugin/version.php")"
+
+hostroot="$plugin"
+until [ -f "$hostroot/vendor/bin/phpunit" ] || { [ -f "$hostroot/config.php" ] && [ -d "$hostroot/vendor" ]; }; do
+    [ "$hostroot" = / ] && die 3 "no Moodle root (vendor/) above $plugin"
+    hostroot="$(dirname "$hostroot")"
+done
+IFS=$'\t' read -r C D < <("$HOME/.claude/hooks/moodle-container.sh" "$hostroot") || die 3 "no running container mounts $hostroot; start the env"
+adm=admin web="$D"; [ -d "$hostroot/public/admin" ] && adm=public/admin web="$D/public"
+incont() { printf '%s' "$D${1#"$hostroot"}"; }
+dx() { docker exec "$C" bash -c "cd '$D' && $1"; }
+
+log="$(mktemp "${TMPDIR:-/tmp}/mtest-$mode-XXXX.log")"
+t0=$(date +%s)
+
+[ "$mode" = behat ] && mapfile -t feats < <(find "$target" -name '*.feature' | sort)
+if [ "$mode" = behat ] && [ "$par" -gt 1 ]; then
+    busy="$(curl -s -m 3 "${MTEST_SELENIUM:-http://localhost:4444/wd/hub}/sessions" | grep -o '"id"' | wc -l)"
+    n=$(( ${MTEST_SELENIUM_CAP:-8} - busy ))
+    [ "$n" -gt "$par" ] && n=$par
+    [ "$n" -gt "${#feats[@]}" ] && n=${#feats[@]}
+    [ "$n" -lt 1 ] && n=1
+    echo "mtest: --parallel $par -> $n (selenium cap ${MTEST_SELENIUM_CAP:-8}, $busy busy, ${#feats[@]} features)"
+    par=$n
+fi
+
+bdataroot() { dx "php -r 'define(\"CLI_SCRIPT\",1);require \"config.php\";echo \$CFG->behat_dataroot;'" 2>/dev/null | tail -1 | sed "s,/behatrun[0-9]*\$,,"; }
+behatyml() {
+    local bdata; bdata="$(bdataroot)"
+    dx "[ -f '$bdata/test_environment_enabled.txt' ] || [ -f '${bdata%/behatrun}/test_environment_enabled.txt' ] || exit 0
+        for f in '$bdata/behat/behat.yml' '$bdata/behatrun/behat/behat.yml'; do [ -f \"\$f\" ] && echo \"\$f\" && break; done"
+}
+parready() {
+    local bdata; bdata="$(bdataroot)"
+    dx "[ -f '$bdata/test_environment_enabled.txt' ] && [ -f '$bdata/behatrun$par/behat/behat.yml' ] &&
+        php -r 'exit((int)(json_decode(file_get_contents(\"$bdata/run_environment.json\"))->parallel ?? 0) >= $par ? 0 : 1);' &&
+        for i in \$(seq $par); do php $adm/tool/behat/cli/util_single_run.php --diag --run=\$i >/dev/null 2>&1 || exit 1; done"
+}
+ready() {
+    [ "$usepar" = 1 ] && { parready; return; }
+    dx "php $adm/tool/$mode/cli/util.php --diag" >/dev/null 2>&1 || return 1
+    [ "$mode" = phpunit ] || [ -n "$(behatyml)" ]
+}
+initenv() {
+    local jobs=""; [ "$usepar" = 1 ] && jobs=" --parallel=$(( par > envpar ? par : envpar )) --maxruns=${MTEST_INIT_JOBS:-3}"
+    echo "mtest: $mode env stale -> init$jobs (one-off, minutes)"
+    # A parallel init over existing run sites drops them and fails, so start from a dropped env.
+    [ -n "$jobs" ] && dx "php $adm/tool/behat/cli/util.php --drop" >"$log.drop" 2>&1
+    dx "php $adm/tool/$mode/cli/init.php --disable-composer$jobs" >"$log.init" 2>&1 || { tail -5 "$log.init"; die 1 "init failed, log $log.init"; }
+}
+# Writes behatrunI/behat/mtest.yml per worker: that run's config with suite paths cut to its round-robin share.
+split() {
+    local f; for f in "${feats[@]}"; do incont "$f"; echo; done | docker exec -i "$C" php -r '
+        require $argv[1] . "/vendor/autoload.php";
+        [, , $bdata, $n] = $argv;
+        $want = array_filter(array_map("trim", file("php://stdin")));
+        $runs = json_decode(file_get_contents("$bdata/run_environment.json"))->parallel;
+        $known = [];
+        for ($r = 1; $r <= $runs; $r++) {
+            foreach (Symfony\Component\Yaml\Yaml::parseFile("$bdata/behatrun$r/behat/behat.yml")["default"]["suites"] as $s => $v) {
+                foreach ($v["paths"] ?? [] as $p) { $known[$p] = $s; }
+            }
+        }
+        $missing = array_diff($want, array_keys($known));
+        if ($missing) { fwrite(STDERR, "not in behat config: " . implode(" ", $missing) . "\n"); exit(4); }
+        foreach (array_values($want) as $k => $p) { $share[$k % $n + 1][$known[$p]][] = $p; }
+        for ($i = 1; $i <= $n; $i++) {
+            $cfg = Symfony\Component\Yaml\Yaml::parseFile("$bdata/behatrun$i/behat/behat.yml");
+            foreach ($cfg["default"]["suites"] as $s => $v) {
+                if (empty($share[$i][$s])) { unset($cfg["default"]["suites"][$s]); } else { $cfg["default"]["suites"][$s]["paths"] = $share[$i][$s]; }
+            }
+            $chrome = &$cfg["default"]["extensions"]["Behat\\MinkExtension"]["webdriver"]["capabilities"]["extra_capabilities"]["goog:chromeOptions"]["args"];
+            $chrome = array_merge($chrome ?? [], ["disable-backgrounding-occluded-windows", "disable-renderer-backgrounding", "disable-background-timer-throttling"]);
+            unset($chrome);
+            file_put_contents("$bdata/behatrun$i/behat/mtest.yml", Symfony\Component\Yaml\Yaml::dump($cfg, 10, 2));
+        }' -- "$D" "$1" "$par"
+}
+
+# Once the env has parallel run sites, every behat run uses them (the single site is not kept in sync).
+envpar=0 usepar=0
+if [ "$mode" = behat ]; then
+    envpar="$(dx "php -r 'echo (int)(json_decode(@file_get_contents(\"$(bdataroot)/run_environment.json\"))->parallel ?? 0);'" 2>/dev/null | tail -1)"; envpar="${envpar:-0}"
+    [ "$par" -gt 1 ] || [ "${envpar:-0}" -gt 1 ] && usepar=1
+fi
+ready || initenv
+
+args=()
+if [ "$mode" = phpunit ]; then
+    filter=""
+    if [ $# -ge 2 ] && [ "$1" = --filter ]; then filter="$2"; shift 2; fi
+    if [ -f "$target" ]; then
+        cls="$(basename "$target" .php)"
+        filter="$cls${filter:+::$filter}"
+    fi
+    args=(vendor/bin/phpunit --testsuite "${comp}_testsuite")
+    [ -n "$filter" ] && args+=(--filter "$filter")
+elif [ "$usepar" = 1 ]; then
+    bdata="$(bdataroot)"
+    dx "for i in \$(seq $par); do [ -e '$web'/behatrun\$i ] || ln -s . '$web'/behatrun\$i; done"
+    split "$bdata" 2>"$log.split"; src=$?
+    if [ "$src" = 4 ]; then initenv; split "$bdata" 2>"$log.split"; src=$?; fi
+    [ "$src" = 0 ] || { cat "$log.split"; die 1 "split failed"; }
+    extra=""; [ $# -gt 0 ] && printf -v extra '%q ' "$@"
+    pids=()
+    for i in $(seq "$par"); do
+        # Behat loads the first config flag (mtest.yml); Moodle picks the run from the --config one.
+        dx "vendor/bin/behat -c '$bdata/behatrun$i/behat/mtest.yml' --config '$bdata/behatrun$i/behat/behat.yml' $extra" >"$log.$i" 2>&1 &
+        pids+=($!)
+    done
+    rc=0
+    for p in "${pids[@]}"; do wait "$p" || rc=1; done
+    for i in $(seq "$par"); do echo "== behatrun$i"; cat "$log.$i"; done >"$log"
+    grep -v '^Warning: include' "$log" > "$log.clean"
+    grep -q -- '--- Failed' "$log.clean" && sed -n '/^--- Failed/,/^[0-9]\+ scenarios\?/p' "$log.clean" | head -80
+    grep -hE '^[0-9]+ (scenario|step)s? \(' "$log.clean" | awk '
+        { k = $2 ~ /^scen/ ? "scenarios" : "steps"; t[k] += $1; s = $0; sub(/^[^(]*\(/, "", s); sub(/\).*/, "", s)
+          m = split(s, part, ", "); for (j = 1; j <= m; j++) { split(part[j], a, " "); c[k] = c[k] (c[k] ? "|" : "") a[2]; v[k, a[2]] += a[1] } }
+        END { for (k in t) { line = ""; split(c[k], seen, "|"); delete done
+                for (j in seen) if (!(seen[j] in done)) { done[seen[j]]; line = line (line ? ", " : "") v[k, seen[j]] " " seen[j] }
+                print t[k] " " k " (" line ")" } }' | sort -r
+    echo "mtest: behat $comp rc=$rc in $(( $(date +%s) - t0 ))s on $par runs; full log $log"
+    exit "$rc"
+else
+    yml="$(behatyml)"
+    [ -n "$yml" ] || die 1 "behat enabled but no behat.yml found; see $log.init"
+    path="$target"; [ -d "$path" ] && [ -d "$path/tests/behat" ] && path="$path/tests/behat"
+    args=(vendor/bin/behat --config "$yml" "$(incont "$path")")
+fi
+args+=("$@")
+
+printf -v cmd '%q ' "${args[@]}"
+dx "$cmd" >"$log" 2>&1
+rc=$?
+grep -v '^Warning: include' "$log" > "$log.clean"
+if grep -qE '^(There (was|were) [0-9]+|--- Failed)' "$log.clean"; then
+    sed -n '/^\(There \(was\|were\) [0-9]\+\|--- Failed\)/,$p' "$log.clean" | head -80
+    echo "..."; tail -3 "$log.clean"
+else
+    tail -4 "$log.clean"
+fi
+echo "mtest: $mode $comp rc=$rc in $(( $(date +%s) - t0 ))s; full log $log"
+exit "$rc"

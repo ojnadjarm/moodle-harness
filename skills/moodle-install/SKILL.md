@@ -1,12 +1,12 @@
 ---
 name: moodle-install
-description: Create a Moodle dev environment (Docker) for one version, 4.1 to 5.2 — an app + DB compose stack under ~/moodle-envs/<ver> with the matching PHP and DB versions, joined to the shared mailhog + selenium stack. Use when the user asks to install, create or spin up a Moodle X.Y environment or container. Usage: /moodle-install <version> [pgsql|mysql] [--src <path>] [--php X.Y] [--host <name-or-ip>] [--https] [--phpunit] [--behat]
+description: Create a Moodle dev environment (Docker) for one version, 4.1 to 5.3 — an app + DB compose stack under ~/moodle-envs/<ver> with the matching PHP and DB versions, joined to the shared mailhog + selenium stack. Use when the user asks to install, create or spin up a Moodle X.Y environment or container. Usage: /moodle-install <version> [pgsql|mysql] [--src <path>] [--php X.Y] [--host <name-or-ip>] [--https] [--phpunit] [--behat]
 ---
 
 # Install a Moodle environment
 
 Run the installer with the user's arguments and relay its final summary (site URL, admin login,
-containers, ports). It is idempotent: re-run it to repair or extend an environment.
+containers, ports). It refuses (exit 3) an env dir or compose project that already exists; `--new-name <x>` makes a fresh dir and project `<x>`. It never acts on `~/moodle-envs/4.5`, `~/moodle-envs/vass*` or projects `moodle45`/`vass*` (the Vass work site), whatever the flags.
 
 ```bash
 ~/.claude/skills/moodle-install/install.sh $ARGUMENTS
@@ -30,6 +30,7 @@ containers, ports). It is idempotent: re-run it to repair or extend an environme
 | 5.0 | 8.4 | 14 | 8.4 |
 | 5.1 | 8.4 | 15 | 8.4 |
 | 5.2 | 8.4 | 16 | 8.4 |
+| 5.3 | 8.4 | 17 | 8.4 |
 
 DB defaults to pgsql. Each site is `http://moodle<MM>.localhost` (4.5 → `http://moodle45.localhost`; `moodle-45.localhost` works too) through the shared nginx on port 80, which routes by hostname to the app alias. Direct ports follow the version as a fallback: web `80MM`, db `54MM` (pgsql) or `33MM` (mysql). Mailhog (1025/8025) and selenium (4444/5900/7900) are bound once, by the shared stack.
 `--host <name-or-ip>` (e.g. the laptop's LAN IP) makes the site URL `http://<host>:80MM` instead, so the env is reachable from other machines on its own port.

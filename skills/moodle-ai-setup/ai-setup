@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Sets up (or checks) a Moodle 4.5+ site's AI subsystem: provider, placements, role access, hourly limits, policy.
+set -euo pipefail
+here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+
+usage() {
+  cat <<'EOF'
+usage: ai-setup <env> --provider <name> --roles <r1,r2> --limit <n> [options]
+       ai-setup <env> --check            read every value back against the last applied spec
+  <env>              compose project of the site (moodle53 -> container moodle53-app-1)
+  --provider NAME    aiprovider plugin: ollama, openai, anthropic, gemini, ...
+  --roles LIST       role shortnames that get the AI placement capabilities; every other role loses them
+  --limit N          AI requests per user per hour
+  --site-limit N     AI requests per hour for the whole site (default 10 x --limit)
+  --endpoint URL     provider endpoint (ollama default http://127.0.0.1:11434)
+  --apikey-file F    file holding the provider API key (never printed, never stored in the spec)
+  --policy F         AI usage policy HTML (default policy.en.html beside this script)
+  --name TEXT        provider instance name (default "AI setup (<provider>)")
+EOF
+}
+
+env=${1:-}
+case $env in ''|-h|--help) usage; exit 2 ;; esac
+shift
+case $env in
+  moodle45*|*vass*) echo "ai-setup: refusing $env (customer site; use a throwaway env)" >&2; exit 2 ;;
+  moodle[0-9]*) ;;
+  *) echo "ai-setup: env must look like moodle53, got '$env'" >&2; exit 2 ;;
+esac
+
+mode=apply provider='' roles='' limit='' sitelimit='' endpoint='' apikeyfile='' policy=$here/policy.en.html name=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    --check) mode=check ;;
+    --provider) provider=${2:?}; shift ;;
+    --roles) roles=${2:?}; shift ;;
+    --limit) limit=${2:?}; shift ;;
+    --site-limit) sitelimit=${2:?}; shift ;;
+    --endpoint) endpoint=${2:?}; shift ;;
+    --apikey-file) apikeyfile=${2:?}; shift ;;
+    --policy) policy=${2:?}; shift ;;
+    --name) name=${2:?}; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "ai-setup: unknown option $1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+container=$env-app-1
+args=(--mode="$mode")
+if [ "$mode" = apply ] || [ -n "$provider" ]; then
+  [ -n "$provider" ] && [ -n "$roles" ] && [ -n "$limit" ] || { echo "ai-setup: --provider, --roles and --limit are required" >&2; exit 2; }
+  [[ $provider =~ ^[a-z0-9]+$ ]] || { echo "ai-setup: bad provider '$provider'" >&2; exit 2; }
+  [[ $limit =~ ^[1-9][0-9]*$ ]] || { echo "ai-setup: --limit must be a positive integer" >&2; exit 2; }
+  sitelimit=${sitelimit:-$((limit * 10))}
+  [[ $sitelimit =~ ^[1-9][0-9]*$ ]] || { echo "ai-setup: --site-limit must be a positive integer" >&2; exit 2; }
+  [ -r "$policy" ] || { echo "ai-setup: policy file not readable: $policy" >&2; exit 2; }
+  [ "$provider" = ollama ] && endpoint=${endpoint:-http://127.0.0.1:11434}
+  spec=$(python3 -c 'import json,sys
+a=sys.argv[1:]
+print(json.dumps({"provider":a[0],"name":a[1] or "AI setup (%s)" % a[0],"roles":[r for r in a[2].split(",") if r],
+  "limit":int(a[3]),"sitelimit":int(a[4]),"endpoint":a[5],"policy":open(a[6]).read()}))' \
+    "$provider" "$name" "$roles" "$limit" "$sitelimit" "$endpoint" "$policy")
+  args+=(--spec-b64="$(printf %s "$spec" | base64 -w0)")
+fi
+
+dexec=(docker exec -i -u www-data -w /var/www/html)
+if [ -n "$apikeyfile" ]; then
+  [ "$mode" = apply ] || { echo "ai-setup: --apikey-file only applies when setting up" >&2; exit 2; }
+  AISETUP_APIKEY=$(tr -d '\r\n' < "$apikeyfile")
+  export AISETUP_APIKEY
+  dexec+=(-e AISETUP_APIKEY)
+fi
+"${dexec[@]}" "$container" php -- "${args[@]}" < "$here/apply.php"

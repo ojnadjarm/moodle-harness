@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Install a throwaway fixture plugin into a dev Moodle env and remove it cleanly.
+# Usage: mfixture add <env> <plugin-dir> | rm <env> <component> | with <env> <plugin-dir> -- <cmd...>
+#   env: a name under $MFIXTURE_ENVS (default ~/moodle-envs); only $MFIXTURE_ALLOW (default "5.2 5.3").
+# Exit: 0 ok; 1 step failed; 2 usage; 3 refused env or no container.
+set -uo pipefail
+
+die() { echo "mfixture: $2" >&2; exit "$1"; }
+ENVS="${MFIXTURE_ENVS:-$HOME/moodle-envs}"
+ALLOW="${MFIXTURE_ALLOW:-5.2 5.3}"
+
+envroot() {
+    local env="$1" root
+    case "${env,,}" in 4.5*|*vass*) die 3 "refused env $env (4.5/vass are never touched)";; esac
+    [[ " $ALLOW " == *" $env "* ]] || die 3 "refused env $env (allowed: $ALLOW)"
+    root="$(realpath -e "$ENVS/$env/www" 2>/dev/null)" || die 3 "no env dir $ENVS/$env/www"
+    case "${root,,}" in */4.5*|*vass*) die 3 "refused path $root";; esac
+    IFS=$'\t' read -r C D < <("$HOME/.claude/hooks/moodle-container.sh" "$root") || die 3 "no running container mounts $root"
+    ROOT="$root"
+}
+dx() { docker exec "$C" bash -c "cd '$D' && $1"; }
+phpq() { dx "php -r 'define(\"CLI_SCRIPT\",1);require \"config.php\";$1'"; }
+compof() { grep -hoP "\\\$plugin->component\s*=\s*'\K[^']+" "$1/version.php" 2>/dev/null; }
+
+hostdir() {
+    local comp="$1" type name tdir
+    [[ "$comp" =~ ^([a-z]+)_([a-z][a-z0-9_]*)$ ]] || die 2 "bad component: $comp"
+    type="${BASH_REMATCH[1]}"; name="${BASH_REMATCH[2]}"
+    tdir="$(phpq "echo core_component::get_plugin_types()[\"$type\"] ?? \"\";" | tail -1)"
+    [[ "$tdir" == "$D"/* ]] || die 1 "unknown plugin type $type"
+    printf '%s/%s' "$ROOT${tdir#"$D"}" "$name"
+}
+
+upgrade() {
+    dx "php admin/cli/upgrade.php --non-interactive" >"$LOG" 2>&1 || { tail -5 "$LOG"; return 1; }
+    dx "php admin/cli/upgrade.php --is-pending" >/dev/null 2>&1 || { echo "mfixture: upgrade still pending" >&2; return 1; }
+}
+
+cleanup() {
+    local comp="$1" dir="$2" ver
+    ver="$(phpq "echo get_config(\"$comp\",\"version\") ?: \"\";" | tail -1)"
+    if [ -n "$ver" ]; then
+        dx "php admin/cli/uninstall_plugins.php --plugins=$comp --run" >"$LOG" 2>&1
+        ver="$(phpq "echo get_config(\"$comp\",\"version\") ?: \"\";" | tail -1)"
+        [ -z "$ver" ] || { tail -5 "$LOG"; echo "mfixture: $comp still installed, dir kept: $dir" >&2; return 1; }
+    fi
+    rm -rf -- "$dir"
+    dx "php admin/cli/purge_caches.php" >/dev/null 2>&1
+    dx "php admin/cli/upgrade.php --is-pending" >/dev/null 2>&1 || upgrade || return 1
+    echo "mfixture: removed $comp"
+}
+
+add() {
+    local src comp dir
+    src="$(realpath -e "$1" 2>/dev/null)" || die 2 "no such dir: $1"
+    comp="$(compof "$src")" || die 2 "no \$plugin->component in $src/version.php"
+    dir="$(hostdir "$comp")" || exit $?
+    [ -e "$dir" ] && die 1 "$dir exists; run: mfixture rm <env> $comp"
+    trap 'cleanup "$comp" "$dir"; exit 1' INT TERM
+    cp -a "$src" "$dir" || { rm -rf -- "$dir"; die 1 "copy failed"; }
+    if ! upgrade; then cleanup "$comp" "$dir"; die 1 "upgrade failed; $comp removed, log $LOG"; fi
+    trap - INT TERM
+    COMP="$comp"; DIR="$dir"
+    echo "mfixture: installed $comp at $dir"
+}
+
+LOG="$(mktemp "${TMPDIR:-/tmp}/mfixture-XXXX.log")"
+verb="${1:-}"; [ $# -ge 3 ] || die 2 "usage: mfixture add <env> <dir> | rm <env> <component> | with <env> <dir> -- <cmd...>"
+envroot "$2"
+case "$verb" in
+    add) add "$3" ;;
+    rm)  dir="$(hostdir "$3")" || exit $?; cleanup "$3" "$dir" || exit 1 ;;
+    with)
+        [ "${4:-}" = -- ] && [ $# -ge 5 ] || die 2 "usage: mfixture with <env> <dir> -- <cmd...>"
+        add "$3"
+        trap 'rc=$?; cleanup "$COMP" "$DIR" || rc=1; exit $rc' EXIT
+        trap 'exit 130' INT TERM
+        shift 4; "$@"; exit $? ;;
+    *) die 2 "unknown verb: $verb" ;;
+esac

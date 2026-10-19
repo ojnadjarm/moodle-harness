@@ -5,7 +5,7 @@ set -e
 
 SRC="$HOME/.claude"
 DEST="$(cd "$(dirname "$0")" && pwd)"
-SKILLS=(moodle-ci moodle-docs moodle-pluginskel moodle-guidelines moodle-install set-moodle-harness i-have-adhd)
+SKILLS=(moodle-ci moodle-docs moodle-pluginskel moodle-guidelines moodle-install moodle-upgrade-audit moodle-upgrade-rehearsal moodle-ai-setup moodle-web set-moodle-harness i-have-adhd systematic-debugging verification-before-completion)
 DOCS=(CLAUDE.md moodle-guidelines.md moodle-coding-style.md moodle-tips.md moodleapp-instructions.md)
 
 mkdir -p "$DEST/hooks" "$DEST/skills"
@@ -32,4 +32,5 @@ open(sys.argv[2], "a").write("\n")
 PY
 find "$DEST/skills" -type d -name __pycache__ -exec rm -rf {} +
 
+bash "$DEST/tests/no-machine-values.test.sh" "$DEST" >/dev/null || { echo "sync: a machine value reached the repo; run tests/no-machine-values.test.sh" >&2; exit 1; }
 echo "Harness copy updated at $DEST — review the diff and commit."

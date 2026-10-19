@@ -63,14 +63,28 @@ chmod +x ~/.claude/hooks/moodle-detect.sh ~/.claude/hooks/moodle-session-start.s
          ~/.claude/skills/moodle-install/install.sh
 ```
 
-## 4. Wire the hooks into settings.json (idempotent)
+## 4. Wire the hooks into settings.json
 
-Uses python3 — adds exactly one entry per event pointing at our scripts, dropping any prior
-copy of the same command, and preserving every other key and hook. Stores `$HOME/...` as a
-literal so it stays portable across machines.
+The fleet harness owns this step now. `~/agents/adapters/claude/install` merges every hook into
+`~/.claude/settings.json` idempotently — the `SessionStart` entry it writes
+(`harness context --json`) already carries everything `moodle-session-start.sh` used to inject,
+so this skill no longer edits `settings.json` itself.
 
 ```bash
-python3 - <<'PY'
+~/agents/adapters/claude/install    # idempotent; a re-run prints "claude adapter: no changes"
+python3 -c 'import json,os;print(json.dumps(json.load(open(os.path.expanduser("~/.claude/settings.json")))["hooks"],indent=2))'
+```
+
+Expected: one `SessionStart` entry pointing at `adapters/claude/hooks/session-start.sh`; the
+`Stop` entry still pointing at `~/.claude/hooks/moodle-stop-reminder.sh` (this skill's own,
+untouched); plus the `PostToolUse` audit hook and the `SubagentStart`/`SubagentStop` orbiters.
+Details: `~/agents/adapters/claude/README.md`.
+
+On a machine with **no** `~/agents`, wire the two Moodle hooks by hand instead — same merge, one
+entry per event, dropping any prior copy of the same command and preserving every other key:
+
+```bash
+python3 - <<'MERGE'
 import json, os
 p = os.path.expanduser("~/.claude/settings.json")
 data = json.load(open(p)) if os.path.exists(p) else {}
@@ -84,7 +98,7 @@ ensure("SessionStart", "$HOME/.claude/hooks/moodle-session-start.sh")
 ensure("Stop", "$HOME/.claude/hooks/moodle-stop-reminder.sh")
 json.dump(data, open(p, "w"), indent=2)
 print("settings.json wired:", json.dumps(data.get("hooks"), indent=2))
-PY
+MERGE
 ```
 
 ## 5. Install moodle-plugin-ci on the host (if missing)

@@ -213,3 +213,8 @@ the real-world scenario by hand — not a QA test plan, not a tutorial.
 - Reason from the code before probing: prefer reading the source over repeated ad-hoc
   docker/DB probes. Never claim a tool (phpcs, phpunit) is missing without checking the
   harness paths first.
+- Good practice, not a mandate: prefer the core API or AMD module (e.g. `core_table/dynamic`,
+  `dynamic_form`, modals) when writing new code. When fixing hand-written code that
+  duplicates core, pick the cheaper path: a small local fix stays a local fix; switch to core
+  only when the fix would be complicated and core already does what is needed. Never refactor
+  working code to core just because a core equivalent exists.

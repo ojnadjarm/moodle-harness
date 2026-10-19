@@ -1,0 +1,10 @@
+{"site": {"release": "4.5.6 (Build: 20260901)", "version": "2024100706.00"},
+ "plugins": [
+  {"component": "mod_ready", "name": "Ready activity", "version": 2025010100, "release": "1.0", "enabled": true, "status": "uptodate"},
+  {"component": "block_current", "name": "Current block", "version": 2026091000, "release": "3.1", "enabled": null, "status": "uptodate"},
+  {"component": "theme_stale", "name": "Stale theme", "version": 2023050100, "release": "0.9", "enabled": null, "status": "uptodate"},
+  {"component": "format_active", "name": "Active format", "version": 2026080100, "release": "5.0", "enabled": true, "status": "uptodate"},
+  {"component": "local_custom", "name": "Custom <b>tools</b>", "version": 2026010100, "release": "1.4", "enabled": null, "status": "uptodate"},
+  {"component": "auth_disabled", "name": "Disabled auth", "version": 2026090100, "release": "2.0", "enabled": false, "status": "uptodate"},
+  {"component": "qtype_missing", "name": "Missing qtype", "version": null, "release": null, "enabled": null, "status": "missing"}
+ ]}

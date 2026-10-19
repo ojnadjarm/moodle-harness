@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# Create a Moodle dev environment for one version (4.1 … 5.2): an app + db compose stack under
+# Create a Moodle dev environment for one version (4.1 … 5.3): an app + db compose stack under
 # $MOODLE_ENVS/<ver> (default ~/moodle-envs) joined to the shared mailhog + selenium stack.
 # Usage: install.sh <version> [pgsql|mysql] [--src <path>] [--php X.Y] [--host <name-or-ip>] [--https] [--phpunit] [--behat]
+#        [--new-name <x>]   (env dir and compose project <x>; an existing dir or project is refused, exit 3)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${MOODLE_ENVS:-$HOME/moodle-envs}"
-DBPASS='m@0dl3ing'
-ADMINPASS='Admin1234!'
+CONF="${HARNESS_CONFIG:-$HOME/.config/pc-harness/config.env}"
+conf() { [ -r "$CONF" ] && (set +u; . "$CONF"; eval "printf '%s' \"\${$1:-}\""); }
+DBPASS="${MOODLE_DB_PASSWORD:-$(conf MOODLE_DB_PASSWORD || true)}"
+ADMINPASS="${MOODLE_ADMIN_PASSWORD:-$(conf MOODLE_ADMIN_PASSWORD || true)}"
 
 usage() {
-    sed -n '2,4p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 1
 }
 
 ver="${1:-}"; [ -n "$ver" ] || usage; shift
-dbtype=pgsql; src=""; php=""; host=""; https=0; init_phpunit=0; init_behat=0
+dbtype=pgsql; src=""; php=""; host=""; https=0; init_phpunit=0; init_behat=0; newname=""
 while [ $# -gt 0 ]; do
     case "$1" in
         pgsql|mysql) dbtype="$1" ;;
@@ -25,6 +28,7 @@ while [ $# -gt 0 ]; do
         --https) https=1 ;;
         --phpunit) init_phpunit=1 ;;
         --behat) init_behat=1 ;;
+        --new-name) [ $# -ge 2 ] || usage; newname="$2"; shift ;;
         *) usage ;;
     esac
     shift
@@ -40,13 +44,35 @@ case "$ver" in
     5.0) branch=MOODLE_500_STABLE; phpdef=8.4; pg=14; my=8.4 ;;
     5.1) branch=MOODLE_501_STABLE; phpdef=8.4; pg=15; my=8.4 ;;
     5.2) branch=MOODLE_502_STABLE; phpdef=8.4; pg=16; my=8.4 ;;
-    *) echo "Unsupported Moodle version '$ver' (4.1 … 5.2)" >&2; exit 1 ;;
+    5.3) branch=MOODLE_503_STABLE; phpdef=8.4; pg=17; my=8.4 ;;
+    *) echo "Unsupported Moodle version '$ver' (4.1 … 5.3)" >&2; exit 1 ;;
 esac
 php="${php:-$phpdef}"
 mm="${ver/./}"
-name="moodle$mm"
-env="$ROOT/$ver"
+name="${newname:-moodle$mm}"
+env="$ROOT/${newname:-$ver}"
 compose="$env/docker-compose.yml"
+
+refuse() { echo "refused: $1" >&2; exit 3; }
+# The Vass work site (moodle-envs/4.5, moodle-envs/vass*, projects moodle45/vass*) is never touched, whatever the flags.
+guard() {
+    local h p
+    [[ "$name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || refuse "'$name' is not a plain compose project name"
+    case "$name" in moodle45|vass*) refuse "compose project $name is the Vass work site" ;; esac
+    for h in "$HOME" "$(getent passwd "$(id -un)" | cut -d: -f6)"; do
+        for p in "$(realpath -m "$env")" ${src:+"$(realpath -m "$src")"}; do
+            case "$p" in "$h/moodle-envs/4.5"|"$h/moodle-envs/4.5/"*|"$h/moodle-envs/vass"*)
+                refuse "$p is the Vass work site" ;; esac
+        done
+    done
+    [ ! -e "$env" ] || refuse "$env already exists; pick a fresh one with --new-name <x>"
+    ! docker compose ls -a -q | grep -qx "$name" || refuse "compose project $name already exists; pick a fresh one with --new-name <x>"
+}
+guard
+# Unset dev passwords: reuse the env's existing DB password, else generate one for this env.
+[ -z "$DBPASS" ] && [ -f "$compose" ] && DBPASS="$(sed -n 's/.*_PASSWORD: "\(.*\)"/\1/p' "$compose" | head -1)"
+[ -z "$DBPASS" ] && DBPASS="$(openssl rand -hex 8)"
+[ -z "$ADMINPASS" ] && ADMINPASS="Dev1-$(openssl rand -hex 4)!"
 webport="80$mm"
 wwwroot="http://$name.localhost"; [ -z "$host" ] || wwwroot="http://$host:$webport"
 tlsport="84$mm"
@@ -56,7 +82,7 @@ if [ "$https" = 1 ]; then
 fi
 code="${src:-$env/www}"
 mount="${src:-./www}"
-case "$ver" in 5.1|5.2) web="public/"; docroot="/var/www/html/public" ;; *) web=""; docroot="/var/www/html" ;; esac
+case "$ver" in 5.1|5.2|5.3) web="public/"; docroot="/var/www/html/public" ;; *) web=""; docroot="/var/www/html" ;; esac
 if [ "$dbtype" = pgsql ]; then
     dbimage="postgres:$pg"; dbport="54$mm"; dbinner=5432; cfgdbtype=pgsql; dbextra=""
 else

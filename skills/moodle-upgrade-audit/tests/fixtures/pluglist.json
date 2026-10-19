@@ -1,0 +1,15 @@
+{"timestamp": 1792368000, "plugins": [
+ {"component": "mod_ready", "timelastreleased": 1788220800, "versions": [
+  {"version": "2026090100", "release": "2.0", "timecreated": 1788220800, "supportedmoodles": [{"version": 2026032700, "release": "5.2"}, {"version": 2026091600, "release": "5.3"}]},
+  {"version": "2025010100", "release": "1.0", "timecreated": 1735689600, "supportedmoodles": [{"version": 2024100700, "release": "4.5"}]}]},
+ {"component": "block_current", "timelastreleased": 1789000000, "versions": [
+  {"version": "2026091000", "release": "3.1", "timecreated": 1789000000, "supportedmoodles": [{"version": 2026091600, "release": "5.3"}]}]},
+ {"component": "theme_stale", "timelastreleased": 1682899200, "versions": [
+  {"version": "2023050100", "release": "0.9", "timecreated": 1682899200, "supportedmoodles": [{"version": 2022112800, "release": "4.1"}, {"version": 2023042400, "release": "4.2"}]}]},
+ {"component": "format_active", "timelastreleased": 1785542400, "versions": [
+  {"version": "2026080100", "release": "5.0", "timecreated": 1785542400, "supportedmoodles": [{"version": 2026032700, "release": "5.2"}]}]},
+ {"component": "auth_disabled", "timelastreleased": 1788220800, "versions": [
+  {"version": "2026090100", "release": "2.0", "timecreated": 1788220800, "supportedmoodles": [{"version": 2026091600, "release": "5.3"}]}]},
+ {"component": "qtype_missing", "timelastreleased": 1700000000, "versions": [
+  {"version": "2023111400", "release": "1.0", "timecreated": 1700000000, "supportedmoodles": [{"version": 2023100900, "release": "4.3"}]}]}
+]}

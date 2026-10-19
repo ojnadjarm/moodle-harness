@@ -1,0 +1,7 @@
+auth_disabled	remove
+block_current	keep
+format_active	keep
+local_custom	keep
+mod_ready	keep
+qtype_missing	remove
+theme_stale	replace

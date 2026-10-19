@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Run a Moodle CLI script (or any command) as www-data in the container that mounts the cwd.
+# Usage: mexec <script.php|cmd> [args...]   e.g. mexec admin/cli/purge_caches.php
+# Runs in dirroot; a .php path that exists only under public/ (5.1+) runs from public/.
+# Exit: the command's rc; 2 usage or no container.
+set -uo pipefail
+
+[ $# -ge 1 ] || { echo "usage: mexec <script.php|cmd> [args...]  (run from inside a Moodle code tree)" >&2; exit 2; }
+IFS=$'\t' read -r C D < <("$HOME/.claude/hooks/moodle-container.sh" "$PWD") \
+    || { echo "mexec: no running Moodle container mounts $PWD (not inside a Moodle code tree, or its env is stopped)" >&2; exit 2; }
+[[ "$1" == *.php ]] && set -- php "$@"
+t=(-i); [ -t 0 ] && [ -t 1 ] && t=(-it)
+exec docker exec "${t[@]}" -u www-data -w "$D" "$C" sh -c '[ "$1" = php ] && [ ! -e "$2" ] && [ -e "public/$2" ] && cd public; exec "$@"' mexec "$@"

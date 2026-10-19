@@ -1,15 +1,5 @@
 {
   "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/moodle-session-start.sh"
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "hooks": [
@@ -20,7 +10,12 @@
         ]
       }
     ],
-    "PostToolUse": []
+    "SessionStart": [],
+    "PostToolUse": [],
+    "SubagentStart": [],
+    "SubagentStop": [],
+    "PostToolUseFailure": [],
+    "PreToolUse": []
   },
   "outputStyle": "Concise",
   "effortLevel": "medium",

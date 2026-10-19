@@ -11,9 +11,9 @@ services:
                 --collation-server=utf8mb4_bin
                 --skip-log-bin
     environment:
-      MYSQL_ROOT_PASSWORD: "m@0dl3ing"
+      MYSQL_ROOT_PASSWORD: "${MOODLE_DB_PASSWORD:?set MOODLE_DB_PASSWORD in .env}"
       MYSQL_USER: moodle
-      MYSQL_PASSWORD: "m@0dl3ing"
+      MYSQL_PASSWORD: "${MOODLE_DB_PASSWORD:?set MOODLE_DB_PASSWORD in .env}"
       MYSQL_DATABASE: moodle
     ports:
       - 3306:3306
@@ -33,7 +33,7 @@ services:
     environment:
       MOODLE_DATABASE_HOST: db
       MOODLE_DATABASE_USER: moodle
-      MOODLE_DATABASE_PASSWORD: "m@0dl3ing"
+      MOODLE_DATABASE_PASSWORD: "${MOODLE_DB_PASSWORD:?set MOODLE_DB_PASSWORD in .env}"
       MOODLE_DATABASE_NAME: moodle
       MOODLE_DOCKER_BROWSER: chrome
       MOODLE_DOCKER_WEB_HOST: "moodle-dev.localhost"

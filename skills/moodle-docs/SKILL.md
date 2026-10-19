@@ -51,8 +51,8 @@ Key entry points: `docs/apis.md` (API overview), `docs/apis/core/`, `docs/apis/s
 
 ## Notes
 
-- The mirror is a sparse, shallow git clone (markdown only). Refresh occasionally with
-  `sync.sh`; `git -C ~/.moodle-devdocs log -1 --format=%cs` shows how fresh it is.
+- The mirror is a sparse, shallow git clone (markdown only). `moodle-keep-weekly` re-runs
+  `sync.sh` every Sunday; `git -C ~/.moodle-devdocs log -1 --format=%cs` shows how fresh it is.
 - Files are Docusaurus MDX — ignore JSX imports/components, the prose and code blocks are
   what matters.
 - Known gap: some legacy APIs (e.g. the Events API) were never migrated to moodledev.io —

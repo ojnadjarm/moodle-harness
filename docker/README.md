@@ -17,6 +17,7 @@ Portable copy of a standalone dev environment (`~/moodle-dev/docker-compose.yml`
 mkdir -p ~/moodle-dev/docker && cd ~/moodle-dev
 cp ~/moodle-harness/docker/docker-compose.yml .
 cp ~/moodle-harness/docker/000-default.conf docker/
+echo 'MOODLE_DB_PASSWORD=<pick-one>' > .env   # dev DB password, kept out of git
 git clone <moodle repo> http        # docroot is http/public on Moodle 5.1+
 mkdir -p moodledata behatfaildumps && chmod 777 moodledata behatfaildumps
 docker compose up -d

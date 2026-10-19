@@ -32,8 +32,11 @@ skills/
   moodle-install/             # /moodle-install <ver> — Docker env per Moodle version, shared mailhog+selenium
   set-moodle-harness/         # /set-moodle-harness — provision a machine
   i-have-adhd/                # /i-have-adhd — output shape, injected by the SessionStart hook
+  systematic-debugging/       # root cause before fixes (obra/superpowers, MIT)
+  verification-before-completion/ # evidence before "done" (obra/superpowers, MIT)
 install.sh                    # copy the above into ~/.claude (backs up differing docs)
 sync.sh                       # update this repo copy from the live ~/.claude harness
+tests/no-machine-values.test.sh   # fails if this machine's hosts, IPs, paths or dev passwords reach the repo (values from ~/.config/pc-harness)
 ```
 
 ## Install on a new machine

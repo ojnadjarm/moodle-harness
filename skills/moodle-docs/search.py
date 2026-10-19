@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path.home() / ".moodle-devdocs"
 RELEASE_PREFIXES = ("general/releases", "general/app_releases", "general/_releases")
 NOISE_PREFIXES = ("general/community/meetings", "general/community/credits", "general/documentation")
-TOKEN_RE = re.compile(r"[a-z0-9_]+")
+TOKEN_RE = re.compile(r"\d+\.\d+|[a-z0-9_]+")
 TITLE_RE = re.compile(r"^---\s*\n.*?^title:\s*(.+?)\s*$.*?^---\s*$", re.S | re.M)
 STOPWORDS = {"the", "a", "an", "and", "or", "of", "to", "in", "is", "it", "for", "on",
              "with", "as", "be", "by", "this", "that", "are", "how", "do", "i", "you",
