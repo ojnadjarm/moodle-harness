@@ -1,6 +1,6 @@
 ---
 name: moodle-web
-description: Drive a local Moodle env through the browser (Playwright MCP) - log in as admin, reach the admin pages (notifications/upgrade, purge caches, plugin overview, plugin settings) and verify a plugin in the real UI. Use for any "check it in the Moodle UI" task; not for bulk admin work the CLI does better.
+description: Drive a local Moodle env through the browser (Playwright MCP). Use for any "check it in the Moodle UI" task - admin login, notifications/upgrade, purge caches, plugin overview and settings, verify a plugin in the real UI; not for bulk admin work the CLI does better.
 ---
 
 # `/moodle-web <ver> <task>`

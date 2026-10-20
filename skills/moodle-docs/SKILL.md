@@ -1,6 +1,6 @@
 ---
 name: moodle-docs
-description: Instant offline access to the Moodle developer docs (a local mirror of moodledev.io sources). Use for ANY Moodle developer question — core APIs (DML, File, Access, Hooks…), subsystems, plugin-type guides, coding guides, release notes — instead of web-fetching moodledev.io. Also converts any moodledev.io URL to its local file.
+description: Instant offline Moodle developer docs (local moodledev.io mirror). Use for ANY Moodle developer question — core APIs (DML, File, Access, Hooks…), subsystems, plugin types, coding guides, release notes — instead of web-fetching moodledev.io. Also maps a moodledev.io URL to its local file.
 ---
 
 # Moodle developer docs (local moodledev.io mirror)
@@ -29,7 +29,9 @@ in-dev branch or when the branch has no `versioned_docs` snapshot.
    python3 ~/.claude/skills/moodle-docs/search.py "hook listener callback"
    python3 ~/.claude/skills/moodle-docs/search.py --version 5.1 "file storage"
    ```
-   `--version X.Y` searches a stable snapshot instead of the in-dev `docs/`. Query tips:
+   `--version X.Y` searches a stable snapshot instead of the in-dev `docs/`; a version newer
+   than the newest snapshot (e.g. 5.3) searches `docs/` and prints a one-line note. Test:
+   `bash ~/.claude/skills/moodle-docs/tests/search.test.sh`. Query tips:
    - Use 2–4 short, specific domain terms ("activity module", "privacy provider",
      "scheduled task") — full sentences and generic words (create, new, plugin, moodle,
      how) dilute the ranking.

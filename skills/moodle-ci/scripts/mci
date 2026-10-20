@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# Run the Moodle CI steps for one plugin, each where it works (host, host -m root, container,
+# engines node).
+# Usage: mci [quick|full] [plugin-dir|file]   (default: quick, $PWD)
+#   quick: codechecker, phpcs-delta (when in git), phpcompat (mphpcompat), lang (mlang; WARN lines pass),
+#   apicompat (mapicompat; no UPGRADING.md is a SKIP), covers (mcovers: @covers below 5.0, #[CoversClass] from 5.0;
+#   no tests/ dir is a SKIP, mcovers --fix converts), phpunit (mtest).
+#   full adds phplint, phpmd, validate, savepoints, phpdoc, mustache, grunt, privacy (mprivacy),
+#   behat (mtest; only with tests/behat/*.feature, MCI_BEHAT_PARALLEL=N passes --parallel N).
+#   A step that cannot run here is a named SKIP, never a silent red (phpcompat without
+#   $plugin->requires too: run mphpcompat --php X.Y / mapicompat --since X.Y by hand; lang without lang/en).
+#   Prints red steps' log tails, then one `step rc sec` table; the table goes to an mlog log
+#   (scripts/mlog), each step's output to <log>.<step> beside it.
+# Exit: 1 if any step is red, else 0; 2 usage.
+set -uo pipefail
+
+S="$(dirname "$(realpath "$0")")"
+. "$S/mlog"
+die() { echo "mci: $2" >&2; exit "$1"; }
+
+mode=quick
+case "${1:-}" in
+    quick|full) mode="$1"; shift;;
+    -h|--help) sed -n '2,/^# Exit/s/^# \{0,1\}//p' "$0"; exit 0;;
+    -*) die 2 "usage: mci [quick|full] [plugin-dir]";;
+esac
+target="$(realpath -m "${1:-$PWD}")"
+[ -e "$target" ] || die 2 "no such path: $target"
+
+plugin="$target"; [ -f "$plugin" ] && plugin="$(dirname "$plugin")"
+while [ "$plugin" != / ] && ! grep -qs '\$plugin->component' "$plugin/version.php"; do plugin="$(dirname "$plugin")"; done
+[ "$plugin" = / ] && die 2 "no plugin version.php above $target"
+
+root="$plugin"
+until [ -f "$root/vendor/bin/phpunit" ] || { [ -f "$root/config.php" ] && [ -d "$root/vendor" ]; }; do
+    [ "$root" = / ] && { root=""; break; }
+    root="$(dirname "$root")"
+done
+
+MPC="$(command -v moodle-plugin-ci || echo "$HOME/.moodle-plugin-ci/bin/moodle-plugin-ci")"
+mpcdir=""; [ -x "$MPC" ] && mpcdir="$(dirname "$(dirname "$(realpath "$MPC")")")"
+C="" D=""
+[ "$mode" = full ] && [ -n "$root" ] && IFS=$'\t' read -r C D < <("$HOME/.claude/hooks/moodle-container.sh" "$root")
+CMPC=/tmp/mci-mpc
+
+# name, mode, placement: host = MPC on the plugin; hostm = MPC -m root on the host; cont = MPC -m root in the
+# container (needs Moodle's config/dataroot); node = hostm with the node major package.json asks for;
+# mtest/mpriv/mphpc/mlang/mapicmp/mcov = the sibling mtest/mprivacy/mphpcompat/mlang/mapicompat/mcovers scripts
+# (their rc 3 is a SKIP).
+STEPS=(
+    "codechecker quick host"
+    "phpcs-delta quick git"
+    "phpcompat   quick mphpc"
+    "lang        quick mlang"
+    "apicompat   quick mapicmp"
+    "covers      quick mcov"
+    "phpunit     quick mtest"
+    "phplint     full  host"
+    "phpmd       full  hostm"
+    "validate    full  cont"
+    "savepoints  full  host"
+    "phpdoc      full  cont"
+    "mustache    full  hostm"
+    "grunt       full  node"
+    "privacy     full  mpriv"
+    "behat       full  mtest"
+)
+
+added=""
+trap '[ -n "$added" ] && rm -rf "$added"' EXIT
+comp="$(mlog_component "$plugin")"
+L="$(mlog_new mci "$comp")" || die 1 "cannot create a log in $(mlog_dir "$comp")"
+
+# Sets $reason when step $1 (placement $2) cannot run here; grunt also sets $nodebin.
+why_skip() {
+    reason="" nodebin=""
+    case "$2" in host|hostm|cont|node) [ -n "$mpcdir" ] || { reason="moodle-plugin-ci not installed (SKILL.md §3)"; return; };; esac
+    case "$2" in hostm|cont|node) [ -n "$root" ] || { reason="no Moodle root (vendor/) above $plugin"; return; };; esac
+    case "$2" in
+        cont) if [ -z "$C" ]; then reason="no running container mounts $root; start the env"
+              elif [ ! -f "$mpcdir/composer.lock" ]; then reason="no $mpcdir/composer.lock to stamp the container copy"; fi;;
+        git) git -C "$plugin" rev-parse --git-dir >/dev/null 2>&1 || reason="plugin is not in a git repo";;
+        mtest) if [ "$1" = behat ]; then compgen -G "$plugin/tests/behat/*.feature" >/dev/null || reason="no features in tests/behat"
+               else [ -n "$(find "$plugin/tests" -name '*_test.php' -print -quit 2>/dev/null)" ] || reason="no tests/*_test.php"; fi;;
+        mlang) local short="${comp#mod_}"; [ -f "$plugin/lang/en/$short.php" ] || reason="no lang/en/$short.php";;
+        mcov) [ -d "$plugin/tests" ] || reason="no tests/ dir";;
+        mapicmp) grep -qP '\$plugin->requires\s*=\s*[\x27"]?\d' "$plugin/version.php" ||
+                 reason="no \$plugin->requires in version.php (run mapicompat --since X.Y)";;
+    esac
+    if [ "$1" = mustache ] && [ -d "$plugin/templates" ] && ! command -v java >/dev/null; then
+        reason="templates need java for the HTML validator (vnu.jar); none on PATH"
+    elif [ "$2" = node ]; then
+        [ -d "$root/node_modules" ] || { reason="no node_modules in $root (npm ci there)"; return; }
+        local want have
+        want="$(grep -oP '"node"\s*:\s*"[^0-9]*\K[0-9]+' "$root/package.json" 2>/dev/null | head -1)"
+        have="$(node --version 2>/dev/null | grep -oP '^v\K[0-9]+')"
+        [ -z "$want" ] || [ "$want" = "$have" ] && return
+        nodebin="$(ls -d "${NVM_DIR:-$HOME/.nvm}"/versions/node/v"$want".*/bin 2>/dev/null | sort -V | tail -1)"
+        [ -n "$nodebin" ] || reason="package.json needs node $want, have ${have:-none}; no v$want in ${NVM_DIR:-$HOME/.nvm}"
+    fi
+}
+
+# Copies the host moodle-plugin-ci into the container once per composer.lock change.
+push_mpc() {
+    local st; st="$(stat -c %Y "$mpcdir/composer.lock" 2>/dev/null)"
+    [ "$(docker exec "$C" cat "$CMPC/.stamp" 2>/dev/null)" = "$st" ] && return
+    tar -C "$mpcdir" -cf - . | docker exec -i "$C" sh -c \
+        "mkdir -p $CMPC && tar -xf - -C $CMPC && chmod -R a+rX $CMPC && echo '$st' > $CMPC/.stamp"
+}
+
+run_step() {
+    case "$2" in
+        host) "$MPC" "$1" "$plugin";;
+        hostm) "$MPC" "$1" -m "$root" "$plugin";;
+        node) PATH="${nodebin:+$nodebin:}$PATH" "$MPC" "$1" -m "$root" "$plugin";;
+        git) (cd "$plugin" && "$S/phpcs-delta" .);;
+        mtest) local par=(); [ "$1" = behat ] && [ -n "${MCI_BEHAT_PARALLEL:-}" ] && par=(--parallel "$MCI_BEHAT_PARALLEL")
+               "$S/mtest" "$1" "$plugin" ${par[@]+"${par[@]}"};;
+        mpriv) "$S/mprivacy" "$plugin";;
+        mphpc) "$S/mphpcompat" "$plugin";;
+        mlang) "$S/mlang" "$plugin";;
+        mapicmp) "$S/mapicompat" "$plugin";;
+        mcov) "$S/mcovers" --check "$plugin";;
+        cont)
+            push_mpc || return 1
+            if [ "$1" = phpdoc ]; then
+                # MPC would copy local_moodlecheck in as the container user; place it as the owner, remove after.
+                local mc="$root/local/moodlecheck"; [ -f "$root/public/version.php" ] && mc="$root/public/local/moodlecheck"
+                [ -e "$mc" ] || { added="$mc"; cp -r "$mpcdir/vendor/moodlehq/moodle-local_moodlecheck" "$mc" || return 1; }
+            fi
+            docker exec -u www-data "$C" php "$CMPC/bin/moodle-plugin-ci" "$1" -m "$D" "$D${plugin#"$root"}"
+            local rc=$?
+            [ -n "$added" ] && rm -rf "$added" && added=""
+            return "$rc";;
+    esac
+}
+
+rows=() red=0 skip=0 ok=0
+for s in "${STEPS[@]}"; do
+    read -r name smode place <<<"$s"
+    [ "$mode" = quick ] && [ "$smode" = full ] && continue
+    why_skip "$name" "$place"
+    t0=$(date +%s) rc=SKIP
+    if [ -z "$reason" ]; then
+        run_step "$name" "$place" >"$L.$name" 2>&1; rc=$?
+        if [[ "$place" =~ ^(mtest|mpriv|mphpc|mlang|mapicmp|mcov)$ ]] && [ "$rc" = 3 ]; then rc=SKIP reason="$(tail -1 "$L.$name")"; fi
+    fi
+    case "$rc" in
+        SKIP) skip=$((skip + 1));;
+        0) ok=$((ok + 1));;
+        *) red=$((red + 1)); echo "== $name rc=$rc: last lines of $L.$name"; tail -n 30 "$L.$name";;
+    esac
+    rows+=("$(printf '%-12s %-5s %4s  %s' "$name" "$rc" "$(( $(date +%s) - t0 ))" "$reason")")
+done
+
+{ printf '%-12s %-5s %4s  %s\n' step rc sec note
+  printf '%s\n' "${rows[@]}"
+  echo "mci: $mode ${plugin##*/}: $ok ok, $red red, $skip skip; logs $L"; } | tee "$L"
+[ "$red" = 0 ]

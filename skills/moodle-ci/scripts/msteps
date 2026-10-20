@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Look up the Behat step definitions of the Moodle env that mounts a path (cached per Moodle version).
+# Usage: msteps [words...] [--env-path P] [--refresh]      steps containing every word (case-insensitive)
+#        msteps --check file.feature [--env-path P]         feature step lines with no matching definition
+#   P: a path inside a Moodle code tree (default: the feature's dir with --check, else $PWD).
+#   Cache: ${XDG_CACHE_HOME:-~/.cache}/moodle-harness/steps-<version>-<root hash>.txt (`behat -dl`), redone when version.php changes;
+#   legacy unhashed steps-<version>.txt caches are removed.
+# Exit: 0 matches / all steps defined; 1 no match / undefined steps; 2 usage; 3 no container or Behat not initialised.
+set -uo pipefail
+
+die() { echo "msteps: $2" >&2; exit "$1"; }
+env="" check="" refresh=0 words=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --env-path) env="${2:-}"; shift 2 || shift;;
+        --env-path=*) env="${1#*=}"; shift;;
+        --check) check="${2:-}"; shift 2 || shift;;
+        --check=*) check="${1#*=}"; shift;;
+        --refresh) refresh=1; shift;;
+        -h|--help) sed -n '2,/^# Exit/s/^# \{0,1\}//p' "$0"; exit 0;;
+        -*) die 2 "unknown option $1 (see msteps --help)";;
+        *) words+=("$1"); shift;;
+    esac
+done
+if [ -n "$check" ]; then
+    [ ${#words[@]} -eq 0 ] || die 2 "--check takes no search words"
+    [ -f "$check" ] || die 2 "no such feature file: $check"
+    [ -n "$env" ] || env="$(dirname "$(realpath "$check")")"
+fi
+env="$(realpath "${env:-$PWD}" 2>/dev/null)" && [ -e "$env" ] || die 2 "no such path: ${env:-?}"
+
+root="$env"
+until [ -f "$root/vendor/bin/phpunit" ] || { [ -f "$root/config.php" ] && [ -d "$root/vendor" ]; }; do
+    [ "$root" = / ] && die 3 "no Moodle root (vendor/) above $env"
+    root="$(dirname "$root")"
+done
+vf="$root/version.php"; [ -f "$root/public/version.php" ] && vf="$root/public/version.php"
+ver="$(grep -oP '^\$version\s*=\s*\K[0-9.]+' "$vf" 2>/dev/null)" || die 3 "no \$version in $vf"
+
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/moodle-harness/steps-$ver-$(printf %s "$root" | sha1sum | cut -c1-8).txt"
+for f in "${cache%/*}"/steps-*.txt; do [[ "${f##*/}" =~ ^steps-[0-9.]+\.txt$ ]] && rm -f -- "$f"; done
+if [ "$refresh" = 1 ] || [ ! -s "$cache" ] || [ "$vf" -nt "$cache" ]; then
+    IFS=$'\t' read -r C D < <("$HOME/.claude/hooks/moodle-container.sh" "$root") \
+        || die 3 "no running Moodle container mounts $root; start the env"
+    mkdir -p "$(dirname "$cache")"
+    tmp="$(mktemp "$cache.XXXXXX")" || die 3 "cannot write beside $cache"
+    docker exec -u www-data "$C" bash -c 'cd "$1" || exit 3
+        bd="$(php -r "define(\"CLI_SCRIPT\",1);require \"config.php\";echo \$CFG->behat_dataroot;" 2>/dev/null | tail -1)"
+        bd="${bd%/behatrun*}"
+        for f in "$bd/behatrun/behat/behat.yml" "$bd/behat/behat.yml"; do
+            [ -n "$bd" ] && [ -f "$f" ] && exec nice -n 19 vendor/bin/behat --config "$f" -dl
+        done
+        exit 3' msteps "$D" > "$tmp" 2>/dev/null
+    rc=$?
+    if [ "$rc" -ne 0 ] || ! grep -q ' | ' "$tmp"; then
+        rm -f "$tmp"
+        die 3 "behat -dl failed in $C (rc $rc); Behat not initialised? run: mtest init behat <plugin>"
+    fi
+    mv "$tmp" "$cache"
+fi
+
+if [ -n "$check" ]; then
+    perl -e '
+        my ($defs, $feat) = @ARGV; my (@re, %seen, %bad, @buf, @hdr);
+        my $tok = q{["\x27]?(?:(?<=")[^"]*(?=")|(?<=\x27)[^\x27]*(?=\x27)|-?[\w.,]+)["\x27]?};
+        open my $d, "<", $defs or die; while (<$d>) {
+            chomp; next unless s/^\S+ \| \S+ //; next if $seen{$_}++;
+            if (m{^/(.*)/([a-z]*)$}) { my $r = eval { $2 ? qr/(?$2)$1/ : qr/$1/ }; push @re, $r if $r; next }
+            (my $p = $_) =~ s{([.\\+*?\[^\]\$(){}=!<>|:\-#/])}{\\$1}g;
+            $p =~ s/\\:\w+/$tok/g;
+            $p =~ s/(\s)?\\\(([^\\]+)\\\)(\s)?/(?:$1)?(?:$2)?(?:$3)?/g;
+            $p =~ s{(\w+)\\/(\w+)}{(?:$1|$2)}g;
+            push @re, qr/^$p$/i;
+        }
+        my ($n, $doc, $outline, $ex) = (0, 0, 0, 0);
+        sub chk { my ($ln, $s, $show) = @_; return if $bad{$ln} || grep { $s =~ $_ } @re; $bad{$ln} = $show // $s }
+        open my $f, "<", $feat or die; while (<$f>) {
+            chomp; if (/^\s*("""|```)/) { $doc = !$doc; next } next if $doc;
+            if (/^\s*(Scenario Outline|Scenario Template|Scenario|Background|Rule|Example):/) { $outline = $1 =~ /Outline|Template/; $ex = 0; @buf = (); next }
+            if ($outline && /^\s*(Examples|Scenarios):/) { $ex = 1; @hdr = (); next }
+            if ($outline && $ex && /^\s*\|/) {
+                my @c = map { s/^\s+|\s+$//gr } split /\|/; shift @c;
+                if (!@hdr) { @hdr = @c; next }
+                for my $b (@buf) { my $s = $b->[1]; $s =~ s/<\Q$hdr[$_]\E>/$c[$_]/g for 0 .. $#hdr; chk($b->[0], $s, $b->[1]) }
+                next;
+            }
+            next unless /^\s*(?:Given|When|Then|And|But|\*)\s+(.*?)\s*$/; $n++;
+            if ($outline) { push @buf, [$., $1] } else { chk($., $1) }
+        }
+        print "$feat:$_: $bad{$_}\n" for sort { $a <=> $b } keys %bad;
+        printf STDERR "msteps: %d steps, %d undefined\n", $n, scalar keys %bad; exit(%bad ? 1 : 0);
+    ' "$cache" "$check"
+    exit $?
+fi
+
+sed -n 's/^[^|]*| //p' "$cache" | awk '!seen[$0]++' | MSTEPS_WORDS="$(printf '%s\n' ${words[@]+"${words[@]}"})" awk '
+    BEGIN { n = split(tolower(ENVIRON["MSTEPS_WORDS"]), w, "\n") }
+    { l = tolower($0); for (i = 1; i <= n; i++) if (w[i] != "" && !index(l, w[i])) next; print; hit = 1 }
+    END { exit !hit }'

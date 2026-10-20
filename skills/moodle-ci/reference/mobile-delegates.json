@@ -1,0 +1,249 @@
+{
+ "AddonMessageOutputDelegate": [
+  "delegate",
+  "displaydata",
+  "init",
+  "method",
+  "moodlecomponent",
+  "priority",
+  "ptrenabled",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "AddonModAssignFeedbackDelegate": [
+  "delegate",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "AddonModAssignSubmissionDelegate": [
+  "delegate",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "AddonModQuizAccessRuleDelegate": [
+  "delegate",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "AddonWorkshopAssessmentStrategyDelegate": [
+  "delegate",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreBlockDelegate": [
+  "delegate",
+  "displaydata",
+  "fallback",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreContentLinksDelegate": [
+  "delegate",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreCourseFormatDelegate": [
+  "canviewallsections",
+  "delegate",
+  "displaycourseindex",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreCourseModuleDelegate": [
+  "coursepagemethod",
+  "delegate",
+  "displaydata",
+  "displaydescription",
+  "displayopeninbrowser",
+  "displayprefetch",
+  "displayrefresh",
+  "displaysize",
+  "downloadbutton",
+  "init",
+  "isresource",
+  "method",
+  "moodlecomponent",
+  "offlinefunctions",
+  "ptrenabled",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles",
+  "supportedfeatures",
+  "updatesnames"
+ ],
+ "CoreCourseModulePrefetchDelegate": [
+  "delegate",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreCourseOptionsDelegate": [
+  "delegate",
+  "displaydata",
+  "init",
+  "ismenuhandler",
+  "method",
+  "moodlecomponent",
+  "priority",
+  "ptrenabled",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreEnrolDelegate": [
+  "delegate",
+  "enrolmentAction",
+  "infoIcons",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreFileUploaderDelegate": [
+  "delegate",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreFilterDelegate": [
+  "delegate",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreMainMenuDelegate": [
+  "delegate",
+  "displaydata",
+  "init",
+  "method",
+  "moodlecomponent",
+  "priority",
+  "ptrenabled",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreMainMenuHomeDelegate": [
+  "delegate",
+  "displaydata",
+  "init",
+  "method",
+  "moodlecomponent",
+  "priority",
+  "ptrenabled",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CorePluginFileDelegate": [
+  "delegate",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CorePushNotificationsDelegate": [
+  "delegate",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreQuestionBehaviourDelegate": [
+  "delegate",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreQuestionDelegate": [
+  "delegate",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreSettingsDelegate": [
+  "delegate",
+  "displaydata",
+  "init",
+  "method",
+  "moodlecomponent",
+  "priority",
+  "ptrenabled",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ],
+ "CoreUserDelegate": [
+  "delegate",
+  "displaydata",
+  "displayinusermenu",
+  "init",
+  "method",
+  "moodlecomponent",
+  "priority",
+  "ptrenabled",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles",
+  "type"
+ ],
+ "CoreUserProfileFieldDelegate": [
+  "delegate",
+  "init",
+  "method",
+  "moodlecomponent",
+  "restricttocurrentuser",
+  "restricttoenrolledcourses",
+  "styles"
+ ]
+}

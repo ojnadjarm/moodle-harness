@@ -11,6 +11,10 @@ if ($hassiteconfig) {
 {{/settings_own_page}}
 {{#settings_fulltree}}
 if ($ADMIN->fulltree) {
-    // Add the plugin settings here.
+    $settings->add(new admin_setting_heading(
+        '{{component}}/generalsettings',
+        get_string('generalsettings', '{{component}}'),
+        ''
+    ));
 }
 {{/settings_fulltree}}

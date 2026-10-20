@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Run phpcbf (moodle standard) on a plugin's changed .php files, then list the codechecker errors left.
+# Usage: mfix [plugin-dir] [--all] [--base REF]   (default: $PWD, REF HEAD)
+#   Files: .php added/modified/renamed since the merge-base of REF and HEAD, plus untracked ones; the whole
+#   plugin with --all, outside git or when git ignores it. Never vendor/, node_modules/ or outside plugin-dir.
+#   Uses ${MPC_HOME:-~/.moodle-plugin-ci}/vendor/bin/{phpcs,phpcbf}. Prints `file:line:col: error - msg`
+#   for each error left, then `mfix: fixed N files ...; codechecker errors B -> A`.
+# Exit: 0 no errors left, 1 errors left, 2 usage, 3 SKIP (no moodle-plugin-ci), 4 phpcs/phpcbf crashed.
+set -uo pipefail
+
+die() { echo "mfix: $2" >&2; exit "$1"; }
+dir="" all=0 ref=HEAD
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help) sed -n '2,/^# Exit/s/^# \{0,1\}//p' "$0"; exit 0;;
+        --all) all=1; shift;;
+        --base) [ -n "${2:-}" ] || die 2 "--base needs a ref"; ref="$2"; shift 2;;
+        -*) die 2 "unknown option $1";;
+        *) [ -z "$dir" ] || die 2 "one plugin dir only"; dir="$1"; shift;;
+    esac
+done
+dir="$(realpath "${dir:-$PWD}")"
+[ -f "$dir/version.php" ] || die 2 "no version.php in $dir"
+bin="${MPC_HOME:-$HOME/.moodle-plugin-ci}/vendor/bin"
+[ -x "$bin/phpcbf" ] && [ -x "$bin/phpcs" ] || die 3 "SKIP: no phpcs/phpcbf in $bin"
+cd "$dir" || die 2 "cannot enter $dir"
+
+if [ "$all" = 0 ] && git rev-parse --verify -q HEAD >/dev/null 2>&1 && ! git check-ignore -q version.php; then
+    base="$(git merge-base "$ref" HEAD 2>/dev/null)" || die 2 "no merge-base for $ref"
+    list="$(git -c core.quotePath=off diff --name-only --relative --diff-filter=AMR "$base" -- .
+            git -c core.quotePath=off ls-files --others --exclude-standard -- .)"
+else
+    list="$(find . \( -name vendor -o -name node_modules \) -prune -o -type f -name '*.php' -print | sed 's#^\./##')"
+fi
+mapfile -t files < <(grep -E '\.php$' <<<"$list" | grep -Ev '(^|/)(vendor|node_modules)/' | sort -u)
+
+# Sets $left to the error lines; phpcs rc 0-2 is clean or violations, 3+ a crash.
+check() {
+    local out rc
+    out="$(nice -n 19 "$bin/phpcs" --standard=moodle --report=emacs -q "${files[@]}" 2>&1)"; rc=$?
+    [ "$rc" -le 2 ] || die 4 "phpcs failed (rc $rc): $(head -c 500 <<<"$out")"
+    left="$(grep ': error - ' <<<"$out" | sed "s#^$dir/##")"
+}
+fixed=0 before=0 after=0 left=""
+if [ ${#files[@]} -gt 0 ]; then
+    check; before="$(grep -c . <<<"$left")"
+    sums="$(md5sum -- "${files[@]}")"
+    out="$(nice -n 19 "$bin/phpcbf" --standard=moodle -q "${files[@]}" 2>&1)"; rc=$?
+    [ "$rc" -le 2 ] || die 4 "phpcbf failed (rc $rc): $(head -c 500 <<<"$out")"
+    fixed="$(md5sum --quiet -c <<<"$sums" 2>/dev/null | grep -c ': FAILED')"
+    check
+    [ -z "$left" ] || { echo "$left"; after="$(grep -c . <<<"$left")"; }
+fi
+echo "mfix: fixed $fixed files of ${#files[@]} php; codechecker errors $before -> $after"
+[ "$after" = 0 ]

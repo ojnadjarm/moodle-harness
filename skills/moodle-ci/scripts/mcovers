@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""Check or fix the PHPUnit coverage style of a plugin's tests against its $plugin->requires.
+
+Usage: mcovers [--check|--fix] [plugin-dir]   (default: --check, $PWD)
+  Below 5.0 (requires < 2025041400): @covers docblock tags, no Covers* attributes.
+  5.0 or later: class attributes (#[CoversClass], #[CoversFunction], #[CoversNothing]), no @covers tags.
+  Only test classes (name *_test or extends *testcase) in tests/**/*_test.php are read.
+  --check prints `file:line FAIL <what>` for each tag or attribute in the wrong style.
+  --fix to 5.0+: class and method @covers merge into class attributes plus `use ...\\Attributes\\CoversX;`;
+  below 5.0: class attributes become class-docblock @covers tags, method tags stay. Idempotent.
+Exit: 1 FAIL lines, 0 clean or fixed, 2 usage, 3 SKIP (no tests/ dir or no $plugin->requires).
+"""
+
+import os
+import re
+import sys
+
+V50 = 2025041400
+NS = "PHPUnit\\Framework\\Attributes\\"
+CLASSRE = re.compile(r"^(?:(?:abstract|final|readonly)\s+)*class\s+(\w+)(?:\s+extends\s+([\w\\]+))?")
+TAGRE = re.compile(r"^\s*(?:/\*\*)?\s*\*?\s*@(covers|coversDefaultClass|coversNothing)\b\s*([^\s*]*)")
+ATTRRE = re.compile(r"^\s*#\[\s*\\?(?:PHPUnit\\Framework\\Attributes\\)?Covers(Class|Function|Method|Nothing)\b")
+ATTRITEM = re.compile(r"\\?(?:PHPUnit\\Framework\\Attributes\\)?Covers(Class|Function|Method|Nothing)\b(?:\(([^)]*)\))?")
+USERE = re.compile(r"^use\s+\\?PHPUnit\\Framework\\Attributes\\Covers\w+\s*;")
+
+
+def die(code, msg):
+    print(f"mcovers: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def fq(name):
+    return "\\" + name.lstrip("\\")
+
+
+def test_classes(lines):
+    """Yields (class line, docblock start or None, docblock end or None, body end) per test class."""
+    for c, line in enumerate(lines):
+        m = CLASSRE.match(line)
+        if not m or not (m.group(1).endswith("_test") or re.search(r"testcase$", m.group(2) or "", re.I)):
+            continue
+        d = c - 1
+        while d >= 0 and lines[d].lstrip().startswith("#["):
+            d -= 1
+        ds = de = None
+        if d >= 0 and lines[d].strip().endswith("*/"):
+            de = ds = d
+            while ds > 0 and not lines[ds].lstrip().startswith("/**"):
+                ds -= 1
+        end = next((i for i in range(c + 1, len(lines)) if re.match(r"^}\s*$", lines[i])), len(lines) - 1)
+        yield c, ds, de, end
+
+
+def imports(lines):
+    ns, uses = "", {}
+    for line in lines:
+        m = re.match(r"^namespace\s+([\w\\]+)\s*;", line)
+        if m:
+            ns = m.group(1)
+        m = re.match(r"^use\s+\\?([\w\\]+)(?:\s+as\s+(\w+))?\s*;", line)
+        if m:
+            uses[m.group(2) or m.group(1).rsplit("\\", 1)[-1]] = m.group(1)
+    return ns, uses
+
+
+def target_key(kind, arg, ns, uses):
+    """Identity of a Covers target with class names resolved through namespace and use."""
+    if kind in ("Class", "Method"):
+        cls, sep, rest = arg.partition(",")
+        return kind, resolve(re.sub(r"::class$", "", cls.strip()), ns, uses) + sep + re.sub(r"\s", "", rest)
+    return kind, arg.strip("'\"")
+
+
+def resolve(name, ns, uses):
+    if name.startswith("\\"):
+        return name
+    head, _, rest = name.partition("\\")
+    if head in uses:
+        return fq(uses[head] + ("\\" + rest if rest else ""))
+    return fq(ns + "\\" + name if ns else name)
+
+
+def scan(lines):
+    """Returns per test class the tag lines and attribute lines it holds."""
+    out = []
+    for c, ds, de, end in test_classes(lines):
+        start = ds if ds is not None else c
+        tags = [i for i in range(start, end + 1) if i != c and TAGRE.match(lines[i])]
+        a = c
+        while a > 0 and lines[a - 1].lstrip().startswith("#["):
+            a -= 1
+        attrs = [i for i in range(min(start, a), c) if ATTRRE.match(lines[i])]
+        out.append((c, ds, de, end, tags, attrs))
+    return out
+
+
+def drop_docblock_lines(lines, rm, ds, de):
+    """Removes lines rm; drops a blank ` *` left before ` */` and a docblock left empty."""
+    keep = [i for i in range(ds, de + 1) if i not in rm]
+    body = [i for i in keep if lines[i].strip() not in ("/**", "*/")]
+    if not body:
+        return set(range(ds, de + 1))
+    if lines[body[-1]].strip() == "*":
+        rm = rm | {body[-1]}
+    return rm
+
+
+def to_attrs(lines):
+    ns, uses = imports(lines)
+    rm, ins, kinds = set(), {}, []
+    for c, ds, de, end, tags, attrs in scan(lines):
+        if not tags:
+            continue
+        targets, nothing, default = [], False, None
+        for i in attrs:
+            for kind, arg in ATTRITEM.findall(lines[i]):
+                targets.append((kind, arg.strip()))
+            rm.add(i)
+        for i in tags:
+            tag, arg = TAGRE.match(lines[i]).groups()
+            if tag == "coversDefaultClass":
+                default = fq(arg)
+        for i in tags:
+            tag, arg = TAGRE.match(lines[i]).groups()
+            if tag == "coversNothing":
+                nothing = True
+            elif tag == "coversDefaultClass":
+                targets.append(("Class", fq(arg) + "::class"))
+            elif arg.startswith("::"):
+                targets.append(("Class", default + "::class") if default else ("Function", f"'{arg[2:].rstrip('()')}'"))
+            elif arg:
+                targets.append(("Class", fq(arg.split("::")[0]) + "::class"))
+            if lines[i].lstrip().startswith("/**"):
+                rm.add(i)
+        for ds2, de2 in docblocks(lines, ds if ds is not None else c, end):
+            hit = {i for i in tags if ds2 <= i <= de2}
+            if hit:
+                rm |= drop_docblock_lines(lines, hit, ds2, de2)
+        seen, attrlines = set(), []
+        for kind, arg in targets:
+            if target_key(kind, arg, ns, uses) not in seen:
+                seen.add(target_key(kind, arg, ns, uses))
+                attrlines.append(f"#[Covers{kind}({arg})]" if arg else f"#[Covers{kind}]")
+        if not attrlines:
+            attrlines = ["#[CoversNothing]"] if nothing else []
+        ins[c] = attrlines
+        kinds += [re.match(r"#\[(\w+)", a).group(1) for a in attrlines]
+    if not ins:
+        return lines
+    need = [k for k in dict.fromkeys(kinds) if k not in uses]
+    out = []
+    usepos = use_insert_point(lines)
+    for i, line in enumerate(lines):
+        if i == usepos[0]:
+            out += usepos[1](need)
+        if i in ins:
+            out += ins[i]
+        if i not in rm:
+            out.append(line)
+    return out
+
+
+def docblocks(lines, a, b):
+    i = a
+    while i <= b:
+        if lines[i].lstrip().startswith("/**"):
+            j = i
+            while j <= b and not lines[j].rstrip().endswith("*/"):
+                j += 1
+            yield i, j
+            i = j
+        i += 1
+
+
+def use_insert_point(lines):
+    """Returns (line index, maker) where the attribute imports go."""
+    first = next((c for c, *_ in test_classes(lines)), len(lines))
+    firstdecl = next((i for i in range(first + 1) if CLASSRE.match(lines[i])), first)
+    lastuse = max((i for i in range(firstdecl) if re.match(r"^use\s", lines[i])), default=None)
+    if lastuse is not None:
+        return lastuse + 1, lambda need: [f"use {NS}{k};" for k in need]
+    nsline = next((i for i in range(firstdecl) if re.match(r"^namespace\s", lines[i])), None)
+    if nsline is not None:
+        at = nsline + 2 if nsline + 1 < len(lines) and not lines[nsline + 1].strip() else nsline + 1
+        return at, lambda need: [f"use {NS}{k};" for k in need] + ([""] if need else [])
+    d = firstdecl - 1
+    while d >= 0 and lines[d].lstrip().startswith("#["):
+        d -= 1
+    if d >= 0 and lines[d].strip().endswith("*/"):
+        while d > 0 and not lines[d].lstrip().startswith("/**"):
+            d -= 1
+    else:
+        d = firstdecl
+    return d, lambda need: [f"use {NS}{k};" for k in need] + ([""] if need else [])
+
+
+def to_tags(lines):
+    ns, uses = imports(lines)
+    rm, add, newdoc = set(), {}, {}
+    for c, ds, de, end, tags, attrs in scan(lines):
+        if not attrs:
+            continue
+        have = {(t, a) for t, a in (TAGRE.match(lines[i]).groups() for i in tags if ds is not None and ds <= i <= de)}
+        want = []
+        for i in attrs:
+            for kind, arg in ATTRITEM.findall(lines[i]):
+                arg = arg.strip()
+                if kind == "Nothing":
+                    want.append(("coversNothing", ""))
+                elif kind == "Function":
+                    want.append(("covers", "::" + arg.strip("'\"")))
+                else:
+                    parts = [p.strip() for p in arg.split(",")]
+                    cls = resolve(re.sub(r"::class$", "", parts[0]), ns, uses)
+                    meth = "::" + parts[1].strip("'\"") if kind == "Method" and len(parts) > 1 else ""
+                    want.append(("covers", cls + meth))
+            rm.add(i)
+        new = [f" * @{t} {a}".rstrip() for t, a in dict.fromkeys(want) if (t, a) not in have]
+        if ds is None:
+            newdoc[c] = ["/**"] + new + [" */"]
+        elif new:
+            last = lines[de - 1].strip() if de > ds else ""
+            sep = [" *"] if last not in ("/**", "*") and not last.startswith("* @") else []
+            add[de] = sep + new
+    if not rm:
+        return lines
+    out, dropped = [], False
+    for i, line in enumerate(lines):
+        if i in add:
+            out += add[i]
+        if i in newdoc:
+            out += newdoc[i]
+        if USERE.match(line):
+            dropped = True
+        elif dropped and not line.strip() and out and not out[-1].strip():
+            dropped = False
+        elif i not in rm:
+            dropped = False
+            out.append(line)
+    return out
+
+
+def main(argv):
+    mode, target = "check", None
+    for a in argv:
+        if a in ("-h", "--help"):
+            print(__doc__.strip())
+            return 0
+        if a in ("--check", "--fix"):
+            mode = a[2:]
+        elif a.startswith("-") or target:
+            die(2, "usage: mcovers [--check|--fix] [plugin-dir]")
+        else:
+            target = a
+    plugin = os.path.realpath(target or os.getcwd())
+    try:
+        version = open(os.path.join(plugin, "version.php"), encoding="utf-8").read()
+    except OSError:
+        die(2, f"no version.php in {plugin}")
+    tests = os.path.join(plugin, "tests")
+    if not os.path.isdir(tests):
+        die(3, "SKIP: no tests/ dir")
+    m = re.search(r"\$plugin->requires\s*=\s*['\"]?(\d{10})", version)
+    if not m:
+        die(3, "SKIP: no $plugin->requires in version.php")
+    requires = int(m.group(1))
+    attrs = requires >= V50
+    files = sorted(os.path.join(d, f) for d, _, fs in os.walk(tests) for f in fs if f.endswith("_test.php"))
+    fails = fixed = 0
+    for path in files:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        lines = text.split("\n")
+        rel = os.path.relpath(path, plugin)
+        if mode == "fix":
+            new = to_attrs(lines) if attrs else to_tags(lines)
+            if new != lines:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("\n".join(new))
+                fixed += 1
+                print(f"{rel} fixed")
+            continue
+        for c, ds, de, end, tags, alines in scan(lines):
+            for i in (tags if attrs else alines):
+                what = "@" + TAGRE.match(lines[i]).group(1) if attrs else lines[i].strip()
+                want = "#[CoversClass] (5.0+)" if attrs else "@covers (below 5.0)"
+                print(f"{rel}:{i + 1} FAIL {what}; requires {requires} wants {want}")
+                fails += 1
+        if not attrs:
+            for i, line in enumerate(lines):
+                if USERE.match(line):
+                    print(f"{rel}:{i + 1} FAIL {line.strip()}; requires {requires} wants @covers (below 5.0)")
+                    fails += 1
+    style = "attributes" if attrs else "@covers"
+    if mode == "fix":
+        print(f"mcovers: {fixed} of {len(files)} files fixed to {style} (requires {requires})")
+        return 0
+    print(f"mcovers: {fails} FAIL in {len(files)} files (requires {requires}: {style})")
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

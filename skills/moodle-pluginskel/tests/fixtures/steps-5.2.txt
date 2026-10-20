@@ -1,0 +1,212 @@
+# Trimmed behat -dl dump, Moodle 5.2 (2026042004.02), default suite: core auth, data_generators, forms, general, navigation contexts.
+default | Given /^I log in as "(?P<username_string>(?:[^"]|\\")*)"$/
+default | Given I am logged in as :username
+default | Given /^I log out$/
+default | Given I am not logged in
+default | Given /^the following "(?P<element_string>(?:[^"]|\\")*)" exist:$/
+default | Given :count :entitytype exist with the following data:
+default | Given the following :entitytype exists:
+default | When /^I press "(?P<button_string>(?:[^"]|\\")*)"$/
+default | When /^I press "(?P<button_string>(?:[^"]|\\")*)" and switch to main window$/
+default | Given /^I set the following fields to these values:$/
+default | Given /^I set the following fields in the "(?P<element_container_string>(?:[^"]|\\")*)" "(?P<text_selector_string>[^"]*)" to these values:$/
+default | Given /^I expand all fieldsets$/
+default | Given /^I set the field "(?P<field_string>(?:[^"]|\\")*)" to local url "(?P<field_path_string>(?:[^"]|\\")*)"$/
+default | Given /^I set the field "(?P<field_string>(?:[^"]|\\")*)" to "(?P<field_value_string>(?:[^"]|\\")*)"$/
+default | Given /^I set the field "(?P<field_string>(?:[^"]|\\")*)" in the "(?P<element_container_string>(?:[^"]|\\")*)" "(?P<text_selector_string>[^"]*)" to "(?P<field_value_string>(?:[^"]|\\")*)"$/
+default | Given /^I press key "(?P<key_string>(?:[^"]|\\")*)" in the field "(?P<field_string>(?:[^"]|\\")*)"$/
+default | Given /^I set the field "(?P<field_string>(?:[^"]|\\")*)" to multiline:$/
+default | Given /^I set the field with xpath "(?P<fieldxpath_string>(?:[^"]|\\")*)" to "(?P<field_value_string>(?:[^"]|\\")*)"$/
+default | Then /^the field "(?P<field_string>(?:[^"]|\\")*)" matches value "(?P<field_value_string>(?:[^"]|\\")*)"$/
+default | Then /^the field "(?P<field_string>(?:[^"]|\\")*)" (?P<doesnot_bool>does not )?match(?:es)* expression "(?P<expression_string>(?:[^"]|\\")*)"$/
+default | Then /^the field "(?P<field_string>(?:[^"]|\\")*)" matches multiline:$/
+default | Then /^the field "(?P<field_string>(?:[^"]|\\")*)" does not match value "(?P<field_value_string>(?:[^"]|\\")*)"$/
+default | Then /^the field "(?P<field_string>(?:[^"]|\\")*)" in the "(?P<element_container_string>(?:[^"]|\\")*)" "(?P<text_selector_string>[^"]*)" matches value "(?P<field_value_string>(?:[^"]|\\")*)"$/
+default | Then /^the field "(?P<field_string>(?:[^"]|\\")*)" in the "(?P<element_container_string>(?:[^"]|\\")*)" "(?P<text_selector_string>[^"]*)" does not match value "(?P<field_value_string>(?:[^"]|\\")*)"$/
+default | Then /^the field with xpath "(?P<xpath_string>(?:[^"]|\\")*)" matches value "(?P<field_value_string>(?:[^"]|\\")*)"$/
+default | Then /^the field with xpath "(?P<xpath_string>(?:[^"]|\\")*)" does not match value "(?P<field_value_string>(?:[^"]|\\")*)"$/
+default | Then /^the following fields match these values:$/
+default | Then /^the following fields do not match these values:$/
+default | Then /^the following fields in the "(?P<element_container_string>(?:[^"]|\\")*)" "(?P<text_selector_string>[^"]*)" match these values:$/
+default | Then /^the following fields in the "(?P<element_container_string>(?:[^"]|\\")*)" "(?P<text_selector_string>[^"]*)" do not match these values:$/
+default | Then /^the "(?P<select_string>(?:[^"]|\\")*)" select box should contain "(?P<option_string>(?:[^"]|\\")*)"$/
+default | Then /^the "(?P<select_string>(?:[^"]|\\")*)" select box should not contain "(?P<option_string>(?:[^"]|\\")*)"$/
+default | Given /^I select "(?P<singleselect_option_string>(?:[^"]|\\")*)" from the "(?P<singleselect_name_string>(?:[^"]|\\")*)" singleselect$/
+default | Given /^I click on "([^"]*)" item in the autocomplete list$/
+default | Given I open the autocomplete suggestions list
+default | Given I open the autocomplete suggestions list in the :container :containertype
+default | Given /^I expand the "(?P<field_string>(?:[^"]|\\")*)" autocomplete$/
+default | Given /^I should see "(?P<option_string>(?:[^"]|\\")*)" in the list of options for the "(?P<field_string>(?:[^"]|\\")*)" autocomplete$$/
+default | Then the :name select menu should contain :option
+default | Then the :name select menu should :not contain :option
+default | Then the :field field validation message should contain :text
+default | Then the :field field validity check should return :result
+default | Given /^I am on homepage$/
+default | Given /^I am on site homepage$/
+default | Given /^I am on course index$/
+default | Then /^the url should match (?P<pattern>"(?:[^"]|\\")*")$/
+default | Given /^I reload the page$/
+default | Given /^I wait to be redirected$/
+default | Given /^I switch to "(?P<iframe_name_string>(?:[^"]|\\")*)" iframe$/
+default | Given /^I switch to "(?P<iframe_name_string>(?:[^"]|\\")*)" class iframe$/
+default | Given /^I wait until "(?P<iframe_name_string>(?:[^"]|\\")*)" iframe is interactable$/
+default | Given /^I wait until "(?P<iframe_name_string>(?:[^"]|\\")*)" class iframe is interactable$/
+default | Given /^I wait until "(?P<iframe_name_string>(?:[^"]|\\")*)" iframe is interactable and switch to it$/
+default | Given /^I wait until "(?P<iframe_name_string>(?:[^"]|\\")*)" class iframe is interactable and switch to it$/
+default | Given /^I switch to the main frame$/
+default | Given /^I switch to "(?P<window_name_string>(?:[^"]|\\")*)" (window|tab)$/
+default | Given /^I switch to a second window$/
+default | Given /^I switch to the main (window|tab)$/
+default | Given /^I close all opened windows$/
+default | Given /^I accept the currently displayed dialog$/
+default | Given /^I dismiss the currently displayed dialog$/
+default | When /^I follow "(?P<link_string>(?:[^"]|\\")*)"$/
+default | Then /^I wait "(?P<seconds_number>\d+)" seconds$/
+default | Given /^I wait until the page is ready$/
+default | Given /^I wait until "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" exists$/
+default | Given /^I wait until "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" does not exist$/
+default | When /^I hover "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)"$/
+default | When I hover over the :element :selectortype in the :containerelement :containerselectortype
+default | When /^I click on "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)"$/
+default | When /^I set the focus on the "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)"$/
+default | When /^I take focus off "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)"$/
+default | When /^I click on "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" confirming the dialogue$/
+default | When /^I click on "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" dismissing the dialogue$/
+default | When /^I click on "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" in the "(?P<element_container_string>(?:[^"]|\\")*)" "(?P<text_selector_string>[^"]*)"$/
+default | When I :modifier click on :element :selectortype in the :nodeelement :nodeselectortype
+default | Given /^I drag "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector1_string>(?:[^"]|\\")*)" and I drop it in "(?P<container_element_string>(?:[^"]|\\")*)" "(?P<selector2_string>(?:[^"]|\\")*)"$/
+default | Then /^"(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>(?:[^"]|\\")*)" should be visible$/
+default | Then /^"(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>(?:[^"]|\\")*)" should not be visible$/
+default | Then /^"(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" in the "(?P<element_container_string>(?:[^"]|\\")*)" "(?P<text_selector_string>[^"]*)" should be visible$/
+default | Then /^"(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" in the "(?P<element_container_string>(?:[^"]|\\")*)" "(?P<text_selector_string>[^"]*)" should not be visible$/
+default | Then /^I should see "(?P<text_string>(?:[^"]|\\")*)"$/
+default | Then /^I should not see "(?P<text_string>(?:[^"]|\\")*)"$/
+default | Then /^I should see "(?P<text_string>(?:[^"]|\\")*)" in the "(?P<element_string>(?:[^"]|\\")*)" "(?P<text_selector_string>[^"]*)"$/
+default | Then /^I should not see "(?P<text_string>(?:[^"]|\\")*)" in the "(?P<element_string>(?:[^"]|\\")*)" "(?P<text_selector_string>[^"]*)"$/
+default | Then :preelement :preselectortype should appear before :postelement :postselectortype
+default | Then :preelement :preselectortype should appear before :postelement :postselectortype in the :containerelement :containerselectortype
+default | Then :postelement :postselectortype should appear after :preelement :preselectortype
+default | Then :postelement :postselectortype should appear after :preelement :preselectortype in the :containerelement :containerselectortype
+default | Then /^the "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" should be disabled$/
+default | Then /^the "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" should be enabled$/
+default | Then /^the "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" should be readonly$/
+default | Then /^the "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" should not be readonly$/
+default | Then /^"(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" should exist$/
+default | Then /^"(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" should not exist$/
+default | Then edit mode should be available on the current page
+default | Then edit mode should :not be available on the current page
+default | Given /^I trigger cron$/
+default | Given /^I run the scheduled task "(?P<task_name>[^"]+)"$/
+default | Given /^I run all adhoc tasks$/
+default | Then /^"(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" should exist in the "(?P<element2_string>(?:[^"]|\\")*)" "(?P<selector2_string>[^"]*)"$/
+default | Then /^"(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" should not exist in the "(?P<element2_string>(?:[^"]|\\")*)" "(?P<selector2_string>[^"]*)"$/
+default | Then /^I change (window|viewport) size to "(mobile|tablet|small|medium|large|\d+x\d+)"( without runtime scaling)?$/
+default | Then /^I change the (window|viewport) size to "(mobile|tablet|small|medium|large|\d+x\d+)"( without runtime scaling)?$/
+default | Then the :attribute attribute of :element :selectortype should be set
+default | Then the :attribute attribute of :element :selectortype should :not be set
+default | Then /^the "(?P<attribute_string>[^"]*)" attribute of "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" should contain "(?P<text_string>(?:[^"]|\\")*)"$/
+default | Then /^the "(?P<attribute_string>[^"]*)" attribute of "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" should not contain "(?P<text_string>(?:[^"]|\\")*)"$/
+default | Then /^"(?P<row_string>[^"]*)" row "(?P<column_string>[^"]*)" column of "(?P<table_string>[^"]*)" table should contain "(?P<value_string>[^"]*)"$/
+default | Then /^"(?P<row_string>[^"]*)" row "(?P<column_string>[^"]*)" column of "(?P<table_string>[^"]*)" table should not contain "(?P<value_string>[^"]*)"$/
+default | Then /^the following should exist in the "(?P<table_string>[^"]*)" table:$/
+default | Then /^the following should not exist in the "(?P<table_string>[^"]*)" table:$/
+default | Then /^following "(?P<link_string>[^"]*)" should download "(?P<expected_bytes>\d+)" bytes$/
+default | Then /^following "(?P<link_string>[^"]*)" should download between "(?P<min_bytes>\d+)" and "(?P<max_bytes>\d+)" bytes$/
+default | Then /^the image at "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" should be identical to "(?P<filepath_string>(?:[^"]|\\")*)"$/
+default | Given /^I start watching to see if a new page loads$/
+default | Given /^a new page should have loaded since I started watching$/
+default | Given /^a new page should not have loaded since I started watching$/
+default | Then /^(?:|I )pause(?:| scenario execution)$/
+default | Then /^I press the "(back|forward|reload)" button in the browser$/
+default | When    I type :keys
+default | When    /^I press the (?P<modifiers_string>.* )?(?P<key_string>.*) key$/
+default | When /^I press key "(?P<key_string>(?:[^"]|\\")*)" in "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)"$/
+default | When /^I press tab key in "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)"$/
+default | Given /^database family used is one of the following:$/
+default | Given the :plugin plugin is installed
+default | Then /^the focused element is( not)? "(?P<node_string>(?:[^"]|\\")*)" "(?P<node_selector_string>[^"]*)"$/
+default | Then /^the focused element is( not)? "(?P<n>(?:[^"]|\\")*)" "(?P<ns>[^"]*)" in the "(?P<c>(?:[^"]|\\")*)" "(?P<cs>[^"]*)"$/
+default | When /^I press( shift)? tab$/
+default | When /^I click on "(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" skipping visibility check$/
+default | Then /^I should see "(?P<elementscount_number>\d+)" occurrences of "(?P<text_string>(?:[^"]|\\")*)" in the "(?P<element_string>(?:[^"]|\\")*)" "(?P<text_selector_string>[^"]*)"$/
+default | Then /^I should see "(?P<elementscount_number>\d+)" node occurrences of type "(?P<node_type>(?:[^"]|\\")*)" in the "(?P<element_string>(?:[^"]|\\")*)" "(?P<text_selector_string>[^"]*)"$/
+default | When /^I press enter/
+default | When I visit :localurl
+default | Given I mark this test as slow setting a timeout factor of :factor
+default | Given /^I click on the "(?P<tab_string>(?:[^"]|\\")*)" dynamic tab$/
+default | When /^I enable "(?P<plugin_string>(?:[^"]|\\")*)" "(?P<plugintype_string>[^"]*)" plugin$/
+default | When /^I disable "(?P<plugin_string>(?:[^"]|\\")*)" "(?P<plugintype_string>[^"]*)" plugin$/
+default | Given the default editor is set to :editor
+default | Given the site is running Moodle version :minversion or higher
+default | Given the site is running Moodle version :maxversion or lower
+default | Given the page title should contain ":title"
+default | When /^I toggle the "(?P<element_string>(?:[^"]|\\")*)" admin switch "(?P<state_string>on|off)"$/
+default | Given I set the stored progress bar :idnumber to :percent
+default | Given /^I confirm "(?P<itemname>(?:[^"]|\\")*)" exists in the "(?P<comboboxname>(?:[^"]|\\")*)" search combo box$/
+default | Given /^I confirm "(?P<itemname>(?:[^"]|\\")*)" does not exist in the "(?P<comboboxname>(?:[^"]|\\")*)" search combo box$/
+default | Given /^I click on "(?P<itemname>(?:[^"]|\\")*)" in the "(?P<comboboxname>(?:[^"]|\\")*)" search combo box$/
+default | Given /^I click on the "(?P<linktext>(?:[^"]|\\")*)" link in the table row containing "(?P<rowtext>(?:[^"]|\\")*)"$/
+default | Then /^I should see "(?P<text>(?:[^"]|\\")*)" in the table row containing "(?P<rowtext>(?:[^"]|\\")*)"$/
+default | Then /^I should not see "(?P<text>(?:[^"]|\\")*)" in the table row containing "(?P<rowtext>(?:[^"]|\\")*)"$/
+default | Given the time is frozen at :datetime
+default | Given the time is no longer frozen
+default | Given i should see :name is active in navigation
+default | Given /^navigation node "([^"]*)" should be expandable$/
+default | Given /^navigation node "([^"]*)" should not be expandable$/
+default | Given /^I follow "(?P<nodetext_string>(?:[^"]|\\")*)" in the user menu$/
+default | Given /^I expand "(?P<nodetext_string>(?:[^"]|\\")*)" node$/
+default | Given /^I collapse "(?P<nodetext_string>(?:[^"]|\\")*)" node$/
+default | Given /^I expand navigation bar$/
+default | Given /^I navigate to "(?P<nodetext_string>(?:[^"]|\\")*)" in current page administration$/
+default | Given /^"(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" should exist in current page administration$/
+default | Given /^"(?P<element_string>(?:[^"]|\\")*)" "(?P<selector_string>[^"]*)" should not exist in current page administration$/
+default | Given /^I navigate to "(?P<nodetext_string>(?:[^"]|\\")*)" in site administration$/
+default | Given /^I open my profile in edit mode$/
+default | When /^I am on the (?<page>[^ "]*) page$/
+default | When /^I am on the "(?<page>[^"]*)" page$/
+default | When /^I am on the (?<page>[^ "]*) page logged in as (?<username>[^ "]*)$/
+default | When /^I am on the "(?<page>[^"]*)" page logged in as (?<username>[^ "]*)$/
+default | When /^I am on the (?<page>[^ "]*) page logged in as "(?<username>[^ "]*)"$/
+default | When /^I am on the "(?<page>[^"]*)" page logged in as "(?<username>[^ "]*)"$/
+default | When /^I am on the (?<identifier>[^ "]*) (?<type>[^ "]*) page$/
+default | When /^I am on the "(?<identifier>[^"]*)" "(?<type>[^"]*)" page$/
+default | When /^I am on the (?<identifier>[^ "]*) "(?<type>[^"]*)" page$/
+default | When /^I am on the "(?<identifier>[^"]*)" (?<type>[^ "]*) page$/
+default | When /^I am on the (?<identifier>[^ "]*) (?<type>[^ "]*) page logged in as (?<username>[^ "]*)$/
+default | When /^I am on the "(?<identifier>[^"]*)" "(?<type>[^"]*)" page logged in as (?<username>[^ "]*)$/
+default | When /^I am on the (?<identifier>[^ "]*) "(?<type>[^"]*)" page logged in as (?<username>[^ "]*)$/
+default | When /^I am on the "(?<identifier>[^"]*)" (?<type>[^ "]*) page logged in as (?<username>[^ "]*)$/
+default | When /^I am on the (?<identifier>[^ "]*) (?<type>[^ "]*) page logged in as "(?<username>[^"]*)"$/
+default | When /^I am on the "(?<identifier>[^"]*)" "(?<type>[^"]*)" page logged in as "(?<username>[^"]*)"$/
+default | When /^I am on the (?<identifier>[^ "]*) "(?<type>[^"]*)" page logged in as "(?<username>[^"]*)"$/
+default | When /^I am on the "(?<identifier>[^"]*)" (?<type>[^ "]*) page logged in as "(?<username>[^"]*)"$/
+default | When /^I open a tab named "(?<name>[^"]*)" on the current page$/
+default | When /^I open a tab named "(?<name>[^"]*)" on the "(?<page>[^"]*)" page$/
+default | When /^I open a tab named "(?<name>[^"]*)" on the "(?<identifier>[^"]*)" "(?<page>[^"]*)" page$/
+default | Given /^I am on "(?P<coursefullname_string>(?:[^"]|\\")*)" course homepage$/
+default | Given I am on :coursefullname course homepage with editing mode :onoroff
+default | When /^I open flat navigation drawer$/
+default | When /^I close flat navigation drawer$/
+default | When /^I select "(?P<link_string>(?:[^"]|\\")*)" from primary navigation$/
+default | When I select :link from secondary navigation
+default | Given /^I am on fixture page "(?P<url_string>(?:[^"]|\\")*)"$/
+default | Given /^I follow the breadcrumb "(?P<url_string>(?:[^"]|\\")*)"$/
+default | Given :itemtext :selectortype should exist in the user menu
+default | Given :itemtext :selectortype should :not exist in the user menu
+default | Given :itemtext :selectortype should exist in the :submenuname user submenu
+default | Given :itemtext :selectortype should :not exist in the :submenuname user submenu
+default | Then /^I should see "(?P<submenu_string>[^"]*)" user submenu$/
+default | Given I switch editing mode on
+default | Given I turn editing mode on
+default | Given I switch editing mode off
+default | Given I turn editing mode off
+default | Then /^the "(?P<item_string>[^"]*)" item should (?P<not_bool>not )?exist in the "(?P<dropdown_string>[^"]*)" dropdown$/
+default | Then /^the "(?P<item_string>[^"]*)" item should (?P<not_bool>not )?exist in the "(?P<dropdown_string>[^"]*)" dropdown of the "(?P<container_string>[^"]*)" "(?P<containertype_string>[^"]*)"$/
+default | Given I close block drawer if open
+default | Given I keep block drawer closed
+default | Then menu item :navigationmenuitem should be active
+default | Then menu item :navigationmenuitem should not be active
+default | When /^I update the href of the "(?P<locator_string>[^"]*)" "(?P<selector_string>[^"]*)" link to "(?P<href_string>[^"]*)"$/
+default | Then dropdown item :dropdownitem should be active
+default | Then dropdown item :dropdownitem should not be active
+default | When /^I select "([^"]*)" from the dropdown$/

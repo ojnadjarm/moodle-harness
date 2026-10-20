@@ -3,11 +3,12 @@
 
 import argparse
 import math
+import os
 import re
 from collections import Counter
 from pathlib import Path
 
-ROOT = Path.home() / ".moodle-devdocs"
+ROOT = Path(os.environ.get("MOODLE_DEVDOCS", Path.home() / ".moodle-devdocs"))
 RELEASE_PREFIXES = ("general/releases", "general/app_releases", "general/_releases")
 NOISE_PREFIXES = ("general/community/meetings", "general/community/credits", "general/documentation")
 TOKEN_RE = re.compile(r"\d+\.\d+|[a-z0-9_]+")
@@ -72,6 +73,24 @@ def snippets(query, text, limit=2):
     return sorted(scored[:limit], key=lambda s: s[1])
 
 
+def version_key(version):
+    return tuple(int(part) for part in version.split("."))
+
+
+def resolve_docs(version):
+    """Return (docs dir, note) for a version; newer than every snapshot means the in-dev docs/."""
+    if not version:
+        return ROOT / "docs", None
+    snapshot = ROOT / f"versioned_docs/version-{version}"
+    if snapshot.is_dir():
+        return snapshot, None
+    snapshots = [d.name.removeprefix("version-") for d in (ROOT / "versioned_docs").glob("version-*")]
+    known = sorted((v for v in snapshots if re.fullmatch(r"\d+\.\d+", v)), key=version_key)
+    if re.fullmatch(r"\d+\.\d+", version) and known and version_key(version) > version_key(known[-1]):
+        return ROOT / "docs", f"note: {version} is newer than the newest snapshot ({known[-1]}); searching docs/"
+    return snapshot, None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("query", help="search terms, e.g. 'hook listener callback'")
@@ -81,7 +100,9 @@ def main():
     parser.add_argument("-n", type=int, default=6, help="results to show (default 6)")
     args = parser.parse_args()
 
-    docs = ROOT / f"versioned_docs/version-{args.version}" if args.version else ROOT / "docs"
+    docs, note = resolve_docs(args.version)
+    if note:
+        print(note)
     if not docs.is_dir():
         raise SystemExit(f"error: {docs} not found — run sync.sh (or check the version)")
     query = set(tokens(args.query))

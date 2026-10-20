@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""Write a moodle-plugin-ci 4 workflow whose branch matrix comes from the plugin's version.php.
+
+Usage: mci-workflow [plugin-dir] [--format gha|bitbucket] [--print]
+  Branches: from $plugin->requires up to $plugin->supported[1] (else the newest branch in install.sh).
+  Per branch: one job on its max PHP + pgsql from moodle-install/install.sh; the oldest branch also
+  gets one job on its min PHP. Writes .github/workflows/moodle-ci.yml or bitbucket-pipelines.yml.
+Exit: 0 written/printed, 2 usage or unreadable version.php, 3 refused (file exists; never overwritten).
+"""
+
+import argparse
+import os
+import re
+import sys
+
+INSTALL_SH = os.path.expanduser("~/.claude/skills/moodle-install/install.sh")
+BRANCHING = {"4.1": 20221128, "4.2": 20230424, "4.3": 20231009, "4.4": 20240422, "4.5": 20241007,
+             "5.0": 20250414, "5.1": 20251006, "5.2": 20260420, "5.3": 20261005}
+PHP_MIN = {"4.1": "7.4", "4.2": "8.0", "4.3": "8.0", "4.4": "8.1", "4.5": "8.1",
+           "5.0": "8.2", "5.1": "8.2", "5.2": "8.3", "5.3": "8.3"}
+STEPS = [
+    ("PHP Lint", "phplint", ""),
+    ("PHP Mess Detector", "phpmd", "continue-on-error: true"),
+    ("Moodle Code Checker", "phpcs --max-warnings 0", ""),
+    ("Moodle PHPDoc Checker", "phpdoc --max-warnings 0", ""),
+    ("Validating", "validate", ""),
+    ("Check upgrade savepoints", "savepoints", ""),
+    ("Mustache Lint", "mustache", ""),
+    ("Grunt", "grunt --max-lint-warnings 0", ""),
+    ("PHPUnit tests", "phpunit --fail-on-warning", ""),
+]
+
+
+def die(code, msg):
+    print(f"mci-workflow: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        die(2, f"cannot read {path}: {e.strerror}")
+    except UnicodeDecodeError as e:
+        die(2, f"cannot read {path}: not UTF-8 (byte 0x{e.object[e.start]:02x} at offset {e.start})")
+
+
+def install_table():
+    rows = re.findall(r"^\s*(\d\.\d)\)\s*branch=(\w+);\s*phpdef=([\d.]+);\s*pg=(\d+);",
+                      read(INSTALL_SH), re.M)
+    if not rows:
+        die(2, f"no version table in {INSTALL_SH}")
+    return {v: {"ver": v, "branch": b, "php": p, "pg": pg} for v, b, p, pg in rows}
+
+
+def code(ver):
+    major, minor = ver.split(".")
+    return int(major) * 100 + int(minor)
+
+
+def strip_comments(src):
+    """PHP source without comments; string literals kept."""
+    return re.sub(r"('(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")|/\*.*?\*/|(?://|#)[^\n]*",
+                  lambda m: m.group(1) or "", src, flags=re.S)
+
+
+def branches(versionphp, table):
+    src = strip_comments(read(versionphp))
+    req = re.search(r"\$plugin->requires\s*=\s*(\d+)", src)
+    if not req:
+        die(2, f"no $plugin->requires in {versionphp}")
+    req = int(req.group(1))
+    sup = re.search(r"\$plugin->supported\s*=\s*(?:\[|array\s*\()\s*\d+\s*,\s*(\d+)\s*,?\s*[\])]", src)
+    if not sup and "$plugin->supported" in src:
+        print("mci-workflow: warning: unparsable $plugin->supported, using the newest branch", file=sys.stderr)
+    known = [v for v in BRANCHING if v in table]
+    top = int(sup.group(1)) if sup else code(known[-1])
+    out = [v for v in known if BRANCHING[v] * 100 + 99 >= req and code(v) <= top]
+    if not out:
+        die(2, f"no known branch between requires {req} and {top}")
+    return [table[v] for v in out]
+
+
+def jobs(rows):
+    out = [dict(r) for r in rows]
+    floor = rows[0]
+    if PHP_MIN[floor["ver"]] != floor["php"]:
+        out.insert(0, dict(floor, php=PHP_MIN[floor["ver"]]))
+    return out
+
+
+def gha(js):
+    inc = "\n".join(f"          - {{moodle-branch: '{j['branch']}', php: '{j['php']}', database: 'pgsql', pg: '{j['pg']}'}}" for j in js)
+    steps = "\n".join(
+        f"\n      - name: {name}\n" + (f"        {extra}\n" if extra else "")
+        + f"        if: ${{{{ !cancelled() }}}}\n        run: moodle-plugin-ci {cmd}" for name, cmd, extra in STEPS)
+    return f"""name: Moodle Plugin CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+
+    services:
+      postgres:
+        image: postgres:${{{{ matrix.pg }}}}
+        env:
+          POSTGRES_USER: 'postgres'
+          POSTGRES_HOST_AUTH_METHOD: 'trust'
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 3
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+{inc}
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+        with:
+          path: plugin
+
+      - name: Setup PHP ${{{{ matrix.php }}}}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{{{ matrix.php }}}}
+          ini-values: max_input_vars=5000
+          coverage: none
+
+      - name: Initialise moodle-plugin-ci
+        run: |
+          composer create-project -n --no-dev --prefer-dist moodlehq/moodle-plugin-ci ci ^4
+          echo $(cd ci/bin; pwd) >> $GITHUB_PATH
+          echo $(cd ci/vendor/bin; pwd) >> $GITHUB_PATH
+          sudo locale-gen en_AU.UTF-8
+          echo "NVM_DIR=$HOME/.nvm" >> $GITHUB_ENV
+
+      - name: Install moodle-plugin-ci
+        run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
+        env:
+          DB: ${{{{ matrix.database }}}}
+          MOODLE_BRANCH: ${{{{ matrix.moodle-branch }}}}
+{steps}
+
+      - name: Behat features
+        id: behat
+        if: ${{{{ !cancelled() }}}}
+        run: moodle-plugin-ci behat --profile chrome --scss-deprecations
+
+      - name: Upload Behat Faildump
+        if: ${{{{ failure() && steps.behat.outcome == 'failure' }}}}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Behat Faildump (${{{{ join(matrix.*, ', ') }}}})
+          path: ${{{{ github.workspace }}}}/moodledata/behat_dump
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Mark cancelled jobs as failed.
+        if: ${{{{ cancelled() }}}}
+        run: exit 1
+"""
+
+
+def bitbucket(js):
+    pgs = sorted({j["pg"] for j in js}, key=int)
+    services = "".join(f"""    postgres{pg}:
+      image: postgres:{pg}
+      variables:
+        POSTGRES_USER: 'test'
+        POSTGRES_PASSWORD: 'test'
+        POSTGRES_HOST_AUTH_METHOD: 'trust'
+""" for pg in pgs)
+    checks = "".join(f"              - moodle-plugin-ci {cmd} || {'true' if 'continue-on-error' in extra else 'rc=1'}\n"
+                     for _, cmd, extra in STEPS)
+    steps = "".join(f"""        - step:
+            name: Moodle {j['ver']} / PHP {j['php']} / pgsql {j['pg']}
+            image: moodlehq/moodle-php-apache:{j['php']}
+            services:
+              - postgres{j['pg']}
+            script:
+              - export DB=pgsql MOODLE_BRANCH={j['branch']}
+              - apt-get update && apt-get install -yqq --no-install-recommends locales
+              - echo 'en_AU.UTF-8 UTF-8' >> /etc/locale.gen && locale-gen
+              - curl -sS https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+              - export NVM_DIR="$HOME/.nvm"
+              - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+              - mkdir -p ../build && cp -r . ../build/plugin && cd ../build
+              - composer create-project -n --no-dev --prefer-dist moodlehq/moodle-plugin-ci ci ^4
+              - export PATH="$(cd ci/bin; pwd):$(cd ci/vendor/bin; pwd):$PATH"
+              - moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1 --db-user=test --db-pass=test
+              - rc=0
+{checks}              - exit $rc
+""" for j in js)
+    return f"""options:
+  max-time: 60
+
+definitions:
+  services:
+{services}
+pipelines:
+  default:
+    - parallel:
+{steps}"""
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="mci-workflow", add_help=True)
+    ap.add_argument("plugin", nargs="?", default=os.getcwd())
+    ap.add_argument("--format", choices=["gha", "bitbucket"], default="gha")
+    ap.add_argument("--print", action="store_true")
+    a = ap.parse_args()
+    plugin = os.path.realpath(a.plugin)
+    vp = os.path.join(plugin, "version.php")
+    if not os.path.isfile(vp):
+        die(2, f"no version.php in {plugin}")
+    js = jobs(branches(vp, install_table()))
+    text = gha(js) if a.format == "gha" else bitbucket(js)
+    if a.print:
+        sys.stdout.write(text)
+        return
+    rel = ".github/workflows/moodle-ci.yml" if a.format == "gha" else "bitbucket-pipelines.yml"
+    dest = os.path.join(plugin, rel)
+    if os.path.exists(dest):
+        die(3, f"refused: {dest} exists (never overwritten)")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w") as f:
+        f.write(text)
+    print(f"{dest}: {len({j['branch'] for j in js})} branches, {len(js)} jobs "
+          f"({', '.join(j['ver'] + '/' + j['php'] for j in js)})")
+
+
+if __name__ == "__main__":
+    main()

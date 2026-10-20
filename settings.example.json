@@ -1,5 +1,19 @@
 {
+  "outputStyle": "Concise",
+  "effortLevel": "medium",
+  "autoCompactEnabled": true,
+  "autoCompactWindow": 300000,
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/moodle-session-start.sh"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
@@ -9,16 +23,6 @@
           }
         ]
       }
-    ],
-    "SessionStart": [],
-    "PostToolUse": [],
-    "SubagentStart": [],
-    "SubagentStop": [],
-    "PostToolUseFailure": [],
-    "PreToolUse": []
-  },
-  "outputStyle": "Concise",
-  "effortLevel": "medium",
-  "autoCompactEnabled": true,
-  "autoCompactWindow": 300000
+    ]
+  }
 }

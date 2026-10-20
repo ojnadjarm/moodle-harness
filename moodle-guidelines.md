@@ -14,21 +14,46 @@ core-related work. These rules are mandatory whenever the task involves Moodle.
 2. **Read the coding style** before writing or reviewing any PHP:
    `~/.claude/moodle-coding-style.md` (full local copy — never fetch the web page).
 3. **Implement** following the style rules below.
-4. **Verify with `/moodle-ci`** (phpcs + PHPUnit) before considering the work complete.
+4. **Verify with `/moodle-ci`** (`mci quick`: codechecker, phpcs-delta, mphpcompat, mlang,
+   mapicompat, mcovers, PHPUnit) before considering the work complete.
 5. **Ship a manual-test fixture script and `testing-instructions.md`** (see "Manual test
    data") so the feature can be exercised by hand in the browser, not just by PHPUnit.
 
 ## Harness skills (prefer these over doing it by hand)
 
-- `/moodle-ci` — code checker + PHPUnit (static checks on host, PHPUnit in the discovered
-  container).
-- `/moodle-pluginskel` — scaffold a new plugin deterministically from a small YAML recipe.
+`S=~/.claude/skills/moodle-ci/scripts` (not on PATH; each has `--help`). Raw command ->
+harness table: `~/.claude/moodle-quickref.md`.
+
+- `/moodle-ci` — code checker, PHP/API compatibility (`$S/mphpcompat`, `$S/mapicompat`) + PHPUnit;
+  `$S/mci` runs each step on the host or in the discovered container. `$S/mdb "<sql>"` (env DB,
+  `{table}` prefix, read-only unless `--write`; `--env <name>` from any cwd), `$S/mphp '<code>'` (PHP with Moodle bootstrapped),
+  `$S/mws <function> key=value` (call a web service function as a user, no token; `--list`),
+  `$S/mversion bump|resolve|check`, `$S/mgrunt` (AMD build), `$S/madopt` (raw vs harness calls),
+  `$S/mupgrade` (upgrade.php + purge caches, old -> new version), `$S/mrules` (guideline rules phpcs
+  misses), `$S/mfixture` (throwaway fixture plugin; `status <env>` before using a shared env),
+  `$S/msrc <X.Y|requires> [--fetch]` (read-only core code tree of a branch, e.g. 4.5 for an LTS target),
+  `$S/mcovers [--check|--fix]` (coverage style vs `$plugin->requires`).
+- `/moodle-pluginskel` — scaffold a new plugin deterministically from a small YAML recipe;
+  `upgrade.py` (upgrade step + version bump), `testdata.py` (manual test data), `backup.py`
+  (mod_ backup/restore; local_ course-level plugin), `external.py` (web service function), `behat.py` (Behat feature),
+  `privacy.py` (real privacy provider + its test; courseid tables map to the course context),
+  `task.py` (scheduled/adhoc task; `--purge T.col [--setting n]` retention), `message.py` (message provider + sink
+  test), `output.py` (renderable/templatable + mustache Example context), `hook.py` (hook
+  callback; `--core` defaults to the msrc tree of `requires`), `event.py` (event + observer + test; `--emit-in page.php`),
+  `table.py` (table_sql report page; `--context course`), `access.py` (capability), `settings.py`
+  (admin settings; `configint`, block_ gets `has_config()`), `form.py` (dynamic form + modal opener),
+  `mobile.py` (Moodle App handler; rows via otherdata), `cache.py` (MUC definition + typed accessor).
+  `external.py --table T --cols a,b` returns the user's rows; `--mobile` adds it to the app service.
 - `/moodle-docs` — local mirror of the moodledev.io developer docs (APIs, guides, general).
 - `/set-moodle-harness` — (re)provision this harness on a machine.
 - `/moodle-guidelines` — reload this context on demand (plugin outside the cwd, after
   context loss).
-- `/moodle-install <version>` — create a Docker environment for Moodle 4.1 … 5.2 (app + DB
+- `/moodle-install <version>` — create a Docker environment for Moodle 4.1 … 5.3 (app + DB
   per version under `~/moodle-envs/<ver>`; mailhog + selenium shared by all of them).
+- `/moodle-web` — check a local site's admin pages and plugin UI.
+- `/moodle-upgrade-audit` — keep/replace/remove table of a site's add-ons.
+- `/moodle-upgrade-rehearsal` — timed 4.5 → 5.3 upgrade on a throwaway site.
+- `/moodle-ai-setup` — idempotent AI subsystem setup.
 
 ## Developer docs
 
@@ -62,12 +87,10 @@ core-related work. These rules are mandatory whenever the task involves Moodle.
 
 - Plugin code lives under `public/`; composer `vendor/`, `phpunit.xml` and the grunt
   tooling (`Gruntfile.js`, `node_modules`) sit one level above at the repo root.
-- PHPUnit runs from the repo root with `public/`-prefixed paths
-  (`vendor/bin/phpunit public/<plugin>/tests/<file>.php`). `moodle-container.sh` finds
-  that root for you.
-- Rebuild AMD from the plugin dir with the root Gruntfile (`<root>/node_modules/.bin/grunt
-  --gruntfile <root>/Gruntfile.js amd`); grunt needs the node version pinned by the repo
-  (`source ~/.nvm/nvm.sh && nvm use`). Ship both `amd/src` and `amd/build`.
+- PHPUnit runs from the repo root with `public/`-prefixed paths; `$S/mtest` (tests) and
+  `$S/mexec` (CLI) find root and container (`$S`: see Harness skills).
+- Rebuild AMD with `$S/mgrunt` from the plugin dir (root Gruntfile, the nvm node matching the
+  root `engines.node`, this plugin only). Ship both `amd/src` and `amd/build`.
 
 ## Docker environments
 
@@ -76,8 +99,8 @@ core-related work. These rules are mandatory whenever the task involves Moodle.
   harness discovers the right one by matching the mounted code:
   `~/.claude/hooks/moodle-container.sh`.
 - Before any command that needs a running environment (unit tests, CLI scripts), run
-  `docker ps` first. If no relevant container is active, ask the user to start the
-  environment for that specific project — do not guess the version.
+  `docker ps` first. If no relevant container is active, report which project's
+  environment is down — do not guess the version.
 - Environments created by `/moodle-install` live in `~/moodle-envs/<ver>` (compose project
   `moodle<MM>`, site `http://moodle<MM>.localhost`, direct port `80MM`); the nginx proxy,
   mailhog and selenium run once in `~/moodle-envs/shared` and every app container reaches
@@ -85,9 +108,8 @@ core-related work. These rules are mandatory whenever the task involves Moodle.
 
 ## Code checker (PHP CodeSniffer)
 
-- `/moodle-ci` runs it for you. Manual fallback:
-  check `phpcs --standard=moodle ./` (or `~/.moodle-plugin-ci/bin/moodle-plugin-ci
-  codechecker <dir>`); auto-fix `phpcbf --standard=moodle ./`.
+- `/moodle-ci` runs it for you. Auto-fix with `$S/mfix` (phpcbf on changed files, then the errors
+  left; `--all` whole plugin); check `~/.moodle-plugin-ci/bin/moodle-plugin-ci codechecker <dir>`.
 - **Errors must always be fixed.** Warnings: on existing projects that already carry many
   warnings, leave them unless the user explicitly asks for fixes.
 - **Never add `phpcs:ignore` / `phpcs:disable` (or any other checker-suppression
@@ -96,7 +118,12 @@ core-related work. These rules are mandatory whenever the task involves Moodle.
 
 ## Unit tests
 
-- Run them via `/moodle-ci` (executes in the discovered Moodle container).
+- Run them via `/moodle-ci`; its scripts (`$S`, see Harness skills): `$S/mtest phpunit <file>`
+  (one file; `--changed [base]` only the tests covering the git change), `$S/phpcs-delta` (new violations only), `$S/mfixture`
+  (throwaway fixture plugins), `$S/mprivacy` (privacy compliance), `$S/mlang` (missing/unused lang
+  strings), `$S/mmatrix` (every running env; `--plan` lists branches to test, runs nothing).
+- Behat: write features from `skills/moodle-ci/reference/behat.md`; never invent step text —
+  `$S/msteps <words>` finds it, `$S/msteps --check <file.feature>` before running.
 - Keep tests as simple as possible — ideally one test function per method. Write only the
   tests needed to prove the requested behaviour; no speculative or redundant edge-case
   tests unless asked.
@@ -119,10 +146,12 @@ core-related work. These rules are mandatory whenever the task involves Moodle.
   NOT swallowed by `ob_start()` — whitelist it with `$this->expectOutputRegex()`.
 - Deprecation notices and failures coming from sibling/third-party plugins are noise: report
   them in one line, don't chase them.
-- Declare coverage with `@covers` docblock tags on each test function (not on the class),
-  never via PHPUnit attributes (`#[CoversClass]`). Use `@coversNothing` for a test that
-  drives no plugin code. The PHPUnit 11 doc-comment deprecation this triggers is expected
-  and acceptable while the pipeline is green — the Moodle convention wins.
+- Coverage follows `$plugin->requires`. Below 5.0 (the owner's 4.5 targets): `@covers`
+  docblock tags on each test function, never PHPUnit attributes; `@coversNothing` for a test
+  that drives no plugin code; the PHPUnit 11 doc-comment deprecation is expected. 5.0 or
+  later: attributes (`#[CoversClass]`, core style). `$S/mcovers --fix` converts. Measured: 5.3 core has
+  1,320 test files with `Covers*` attributes, 6 with `@covers`
+  (`~/.moodle-devdocs/docs/guides/testing/index.md:565-578`).
 
   ```php
   /**
@@ -198,6 +227,8 @@ the real-world scenario by hand — not a QA test plan, not a tutorial.
 - For the official mobile app (moodleapp repo, Ionic/Angular — not PHP), follow
   `~/.claude/moodleapp-instructions.md` for environment install and running. The
   PHP-oriented rules above (code checker, PHPUnit, containers) do not apply there.
+- Plugin side (`db/mobile.php`, `classes/output/mobile.php`): its "Plugin side" section;
+  check with `$S/mmobile`.
 
 ## Working style
 

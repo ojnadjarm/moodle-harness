@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SessionStart hook: always inject the i-have-adhd rules; on a Moodle project also inject the
+# SessionStart hook: always inject the i-have-adhd rules; on a Moodle project also inject the quickref (first),
 # guidelines + tips. Emits hook JSON so a one-line banner is shown to the user.
 
 here="$(dirname "$0")"
@@ -20,12 +20,13 @@ parts = ["=== ADHD OUTPUT MODE — active for this whole session ===", adhd]
 banner = "Harness: ADHD mode on"
 
 if root:
+    parts[:0] = [read("moodle-quickref.md")]
     parts += [
         "=== MOODLE PROJECT DETECTED — these rules are mandatory for this session ===",
         read("moodle-guidelines.md"),
         read("moodle-tips.md"),
         "BEFORE writing or reviewing any PHP, read $HOME/.claude/moodle-coding-style.md.\n"
-        "WHEN code is complete, run the /moodle-ci skill (phpcs + PHPUnit).",
+        "WHEN code is complete, run the /moodle-ci skill (mci quick: code checker, compat, PHPUnit).",
     ]
     banner += f" · Moodle guidelines loaded ({root})"
 

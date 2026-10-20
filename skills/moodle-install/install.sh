@@ -3,6 +3,7 @@
 # $MOODLE_ENVS/<ver> (default ~/moodle-envs) joined to the shared mailhog + selenium stack.
 # Usage: install.sh <version> [pgsql|mysql] [--src <path>] [--php X.Y] [--host <name-or-ip>] [--https] [--phpunit] [--behat]
 #        [--new-name <x>]   (env dir and compose project <x>; an existing dir or project is refused, exit 3)
+#        [--name <x>]       (env dir <x>, compose project moodle<x>, first free ports past every env's, site http://localhost:<port>)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -13,12 +14,12 @@ DBPASS="${MOODLE_DB_PASSWORD:-$(conf MOODLE_DB_PASSWORD || true)}"
 ADMINPASS="${MOODLE_ADMIN_PASSWORD:-$(conf MOODLE_ADMIN_PASSWORD || true)}"
 
 usage() {
-    sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 1
 }
 
 ver="${1:-}"; [ -n "$ver" ] || usage; shift
-dbtype=pgsql; src=""; php=""; host=""; https=0; init_phpunit=0; init_behat=0; newname=""
+dbtype=pgsql; src=""; php=""; host=""; https=0; init_phpunit=0; init_behat=0; newname=""; envname=""
 while [ $# -gt 0 ]; do
     case "$1" in
         pgsql|mysql) dbtype="$1" ;;
@@ -29,6 +30,7 @@ while [ $# -gt 0 ]; do
         --phpunit) init_phpunit=1 ;;
         --behat) init_behat=1 ;;
         --new-name) [ $# -ge 2 ] || usage; newname="$2"; shift ;;
+        --name) [ $# -ge 2 ] || usage; envname="$2"; shift ;;
         *) usage ;;
     esac
     shift
@@ -49,8 +51,8 @@ case "$ver" in
 esac
 php="${php:-$phpdef}"
 mm="${ver/./}"
-name="${newname:-moodle$mm}"
-env="$ROOT/${newname:-$ver}"
+name="${newname:-moodle${envname:-$mm}}"
+env="$ROOT/${newname:-${envname:-$ver}}"
 compose="$env/docker-compose.yml"
 
 refuse() { echo "refused: $1" >&2; exit 3; }
@@ -58,7 +60,7 @@ refuse() { echo "refused: $1" >&2; exit 3; }
 guard() {
     local h p
     [[ "$name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || refuse "'$name' is not a plain compose project name"
-    case "$name" in moodle45|vass*) refuse "compose project $name is the Vass work site" ;; esac
+    case "$name" in moodle45|vass*|moodlevass*) refuse "compose project $name is the Vass work site" ;; esac
     for h in "$HOME" "$(getent passwd "$(id -un)" | cut -d: -f6)"; do
         for p in "$(realpath -m "$env")" ${src:+"$(realpath -m "$src")"}; do
             case "$p" in "$h/moodle-envs/4.5"|"$h/moodle-envs/4.5/"*|"$h/moodle-envs/vass"*)
@@ -73,9 +75,20 @@ guard
 [ -z "$DBPASS" ] && [ -f "$compose" ] && DBPASS="$(sed -n 's/.*_PASSWORD: "\(.*\)"/\1/p' "$compose" | head -1)"
 [ -z "$DBPASS" ] && DBPASS="$(openssl rand -hex 8)"
 [ -z "$ADMINPASS" ] && ADMINPASS="Dev1-$(openssl rand -hex 4)!"
-webport="80$mm"
-wwwroot="http://$name.localhost"; [ -z "$host" ] || wwwroot="http://$host:$webport"
-tlsport="84$mm"
+# pick <port>: with --name, the next port not listening, not in any env's compose file and not the default env's own.
+pick() {
+    local p="$1" used
+    [ -z "$envname" ] && { echo "$p"; return; }
+    used="$(cat "$ROOT"/*/docker-compose.yml 2>/dev/null | grep -oE '[0-9]+:[0-9]+"?\s*$' | cut -d: -f1
+        ss -Hltn | awk '{print $4}' | sed 's/.*://')"
+    while { [ "$p" = "$1" ] && [ -e "$ROOT/$ver" ]; } || grep -qx "$p" <<<"$used"; do p=$((p + 1)); done
+    echo "$p"
+}
+webport="$(pick "80$mm")"
+# The shared nginx routes only moodle<MM>.localhost, so a --name env is served on its own port.
+wwwroot="http://$name.localhost"; [ -z "$envname" ] || wwwroot="http://localhost:$webport"
+[ -z "$host" ] || wwwroot="http://$host:$webport"
+tlsport="$(pick "84$mm")"
 if [ "$https" = 1 ]; then
     [ -n "$host" ] || { echo "--https needs --host <tailnet name>" >&2; exit 1; }
     tlsroot="https://$host:$tlsport"
@@ -84,9 +97,9 @@ code="${src:-$env/www}"
 mount="${src:-./www}"
 case "$ver" in 5.1|5.2|5.3) web="public/"; docroot="/var/www/html/public" ;; *) web=""; docroot="/var/www/html" ;; esac
 if [ "$dbtype" = pgsql ]; then
-    dbimage="postgres:$pg"; dbport="54$mm"; dbinner=5432; cfgdbtype=pgsql; dbextra=""
+    dbimage="postgres:$pg"; dbport="$(pick "54$mm")"; dbinner=5432; cfgdbtype=pgsql; dbextra=""
 else
-    dbimage="mysql:$my"; dbport="33$mm"; dbinner=3306; cfgdbtype=mysqli; dbextra=", 'dbcollation' => 'utf8mb4_bin'"
+    dbimage="mysql:$my"; dbport="$(pick "33$mm")"; dbinner=3306; cfgdbtype=mysqli; dbextra=", 'dbcollation' => 'utf8mb4_bin'"
 fi
 
 echo "== shared stack (mailhog + selenium)"
@@ -248,6 +261,18 @@ else
         --fullname="Moodle $ver" --shortname="$name" --agree-license
 fi
 
+if [ ! -e "$code/vendor/bin/phpunit" ]; then
+    echo "== composer install"
+    docker compose -f "$compose" exec -T app sh -c \
+        'php composer.phar --version >/dev/null 2>&1 || {
+            rm -f composer.phar.tmp
+            curl -fsSL -o composer.phar.tmp https://getcomposer.org/composer.phar &&
+                php composer.phar.tmp --version >/dev/null 2>&1 && mv composer.phar.tmp composer.phar ||
+                { rm -f composer.phar.tmp; echo "composer.phar download failed" >&2; exit 1; }
+        }
+        php composer.phar install --no-interaction'
+fi
+
 if [ "$init_phpunit$init_behat" != 00 ]; then
     docker compose -f "$compose" exec -T app git config --global --add safe.directory /var/www/html
 fi
@@ -265,14 +290,16 @@ if [ "$https" = 1 ]; then
     tailscale serve --bg --https="$tlsport" "http://127.0.0.1:$webport" >/dev/null
 fi
 
+hint="            Browsers resolve *.localhost automatically. From curl/CLI (or a browser that does not),
+            use  curl -H 'Host: $name.localhost' http://localhost/  or add '127.0.0.1 $name.localhost' to your hosts file.
+"
+[ -z "$envname" ] || hint=""
 cat <<EOF
 
 == ready: Moodle $ver ($name)
 Site:       $wwwroot   admin / $ADMINPASS
 ${tlsroot:+TLS:        $tlsroot   (tailscale serve, tailnet only)
-}            Browsers resolve *.localhost automatically. From curl/CLI (or a browser that does not),
-            use  curl -H 'Host: $name.localhost' http://localhost/  or add '127.0.0.1 $name.localhost' to your hosts file.
-Port:       $webport (direct to this app; redirects to the site URL above)
+}${hint}Port:       $webport (direct to this app; redirects to the site URL above)
 Code:       $code   ($branch, PHP $php)
 DB:         $dbimage on localhost:$dbport   moodle / $DBPASS
 Mail:       http://localhost:8025   (smtp mailhog:1025)

@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""Count raw vs harness Moodle calls in Claude transcripts (subagents included) and print the ratio.
+
+Usage: madopt [--since 7d] [--raw [N]] [dir]   dir: default ~/.claude/projects; --since N d|h|m or "all".
+--raw [N]: also print the top N (default 10) raw command shapes with counts.
+Raw: phpunit, behat, phpcs/phpcbf, docker exec, psql/mysql, grunt, Edit/Write of version.php.
+Not in the ratio, counted as excluded: vass (cwd or command names ~/moodle-envs/4.5|vass* or moodle45-*),
+other (ps/pgrep/pkill without a php/moodle word).
+Exit: 0; 2 usage or no such dir.
+"""
+import json
+import os
+import re
+import shlex
+import sys
+from datetime import datetime, timedelta, timezone
+
+HARNESS = {"mtest", "mci", "phpcs-delta", "mexec", "mphp", "mdb", "mgrunt", "mversion", "mfix", "mlang",
+           "msteps", "mprivacy", "mfixture", "mmatrix", "mphpcompat", "mapicompat", "mmobile", "mci-workflow"}
+RAW = ["phpunit", "behat", "phpcs", "grunt", "psql", "exec", "version"]
+SKIP = re.compile(r"^(\w+=\S*|nice|-n|-?\d+|sudo|time|timeout|env|command|exec)$")
+INTERP = {"bash", "sh", "python3"}
+SHELLS = {"bash", "sh"}
+SHELL_ARG = re.compile(r"^[-+]\w*[oO]$")
+HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_][\w.-]*)\1")
+DOCKER_ARG = {"-u", "-w", "-e", "--user", "--workdir", "--env", "--env-file"}
+VASS = re.compile(r"moodle-envs/(4\.5(?![\w.])|vass)|moodle45-")
+
+
+def lead(words):
+    """Words with leading env/nice/sudo [-u X] words removed."""
+    while words and SKIP.match(words[0]):
+        if words.pop(0) == "sudo" and len(words) > 1 and words[0] in ("-u", "-g"):
+            del words[:2]
+    return words
+
+
+def psrow(words):
+    """True for a ps/pgrep/pkill command with no php/moodle word."""
+    return bool(words) and os.path.basename(words[0]) in ("ps", "pgrep", "pkill") \
+        and not re.search(r"php|moodle", " ".join(words), re.I)
+
+
+def usage(rc):
+    print(__doc__.split("\n\n", 1)[1].strip(), file=sys.stderr if rc else sys.stdout)
+    sys.exit(rc)
+
+
+def tool(words):
+    """Category of what the words run: phpunit/behat/phpcs/grunt/psql or None."""
+    text = " ".join(words)
+    for cat, pat in (("phpunit", r"\bphpunit\b"), ("behat", r"\bbehat\b"), ("phpcs", r"\bphpc(s|bf)\b"),
+                     ("grunt", r"\bgrunt\b"), ("psql", r"\b(psql|mysql)\b")):
+        if re.search(pat, text):
+            return cat
+    return None
+
+
+def strip_heredocs(cmd):
+    """The command with every heredoc body removed."""
+    out, ends = [], []
+    for line in cmd.split("\n"):
+        if ends:
+            if line.strip() == ends[0]:
+                ends.pop(0)
+            continue
+        out.append(line)
+        ends = [m.group(2) for m in HEREDOC.finditer(line)]
+    return "\n".join(out)
+
+
+def segments(cmd):
+    """Simple commands of cmd, split on ; | && || newline ( $( and backticks outside quotes."""
+    segs, cur, q, i = [], [], None, 0
+    while i < len(cmd):
+        ch, two = cmd[i], cmd[i:i + 2]
+        step, cut = 1, False
+        if q == "'":
+            q = None if ch == "'" else q
+        elif ch == "\\":
+            step = 2
+        elif two == "$(" or ch == "`":
+            step, cut = (2 if two == "$(" else 1), True
+        elif q == '"':
+            q = None if ch == '"' else q
+        elif ch in "'\"":
+            q = ch
+        elif two in ("&&", "||"):
+            step, cut = 2, True
+        elif ch in ";|\n(":
+            cut = True
+        if cut:
+            segs.append("".join(cur))
+            cur = []
+        else:
+            cur.append(cmd[i:i + step])
+        i += step
+    return segs + ["".join(cur)]
+
+
+def exec_rest(words):
+    """Words after `exec [flags] <container>`."""
+    rest = words[words.index("exec") + 1:]
+    while rest and rest[0].startswith("-"):
+        rest = rest[2:] if rest[0] in DOCKER_ARG else rest[1:]
+    return rest[1:]
+
+
+def shell_c(seg):
+    """The command string of `[docker exec <c>] bash|sh [flags] -c <str>`, else None."""
+    try:
+        words = shlex.split(seg)
+    except ValueError:
+        return None
+    words = lead(words)
+    if words and os.path.basename(words[0]) in ("docker", "docker-compose") and "exec" in words:
+        words = exec_rest(words)
+    if not words or os.path.basename(words[0]) not in SHELLS:
+        return None
+    i = 1
+    while i < len(words) and words[i][:1] in "-+" and not words[i].startswith("--"):
+        if "c" in words[i][1:]:
+            return words[i + 1] if i + 1 < len(words) else None
+        i += 2 if SHELL_ARG.match(words[i]) else 1
+    return None
+
+
+def shape(words):
+    """Words joined with their quotes stripped."""
+    return " ".join(w.strip("\"'") for w in words)
+
+
+def classify(cmd):
+    """('harness', tool, None) or ('raw', category, shape) for one Bash command; None when neither.
+
+    Category 'other' is a ps/pgrep/pkill row, excluded from the ratio."""
+    raw = None
+    for seg in segments(strip_heredocs(cmd)):
+        words = lead(seg.split())
+        if not words:
+            continue
+        inner = shell_c(seg)
+        if inner is not None:
+            hit = classify(inner)
+            if hit and hit[0] == "harness":
+                return hit
+            if not raw and hit:
+                raw = hit[1:]
+            elif not raw and words[0] in ("docker", "docker-compose"):
+                cmds = [w for w in (s.split() for s in segments(inner)) if w and w[0] != "cd"]
+                raw = ("other" if cmds and psrow(cmds[0]) else "exec", shape(cmds[0][:3]) if cmds else "")
+            continue
+        w0 = os.path.basename(words[0].strip("\"'"))
+        if w0 in INTERP:
+            words.pop(0)
+            while words and words[0].startswith("-") and words[0] != "-":
+                f = words.pop(0)
+                if words and (SHELL_ARG.match(f) and w0 in SHELLS or f in ("-W", "-X") and w0 == "python3"):
+                    words.pop(0)
+            if not words:
+                continue
+            w0 = os.path.basename(words[0].strip("\"'"))
+        if w0 in HARNESS:
+            return "harness", w0, None
+        if raw:
+            continue
+        if w0 in ("docker", "docker-compose") and "exec" in words:
+            rest = exec_rest(words)
+            cat = tool(words[words.index("exec") + 1:]) or ("other" if psrow(rest) else "exec")
+            raw = (cat, shape(rest[:3]))
+        elif w0 in ("php", "npx"):
+            raw = tool(words[1:2]) and (tool(words[1:2]), shape(words[:3]))
+        elif w0 in ("phpunit", "behat", "phpcs", "phpcbf", "grunt", "psql", "mysql"):
+            raw = (tool([w0]), shape(words[:3]))
+    return raw and ("raw", *raw)
+
+
+def main(argv):
+    since, root, top = "7d", os.path.expanduser("~/.claude/projects"), 0
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a in ("-h", "--help"):
+            usage(0)
+        elif a == "--since" and args:
+            since = args.pop(0)
+        elif a == "--raw":
+            top = int(args.pop(0)) if args and args[0].isdigit() else 10
+        elif not a.startswith("-"):
+            root = a
+        else:
+            usage(2)
+    m = re.fullmatch(r"(\d+)([dhm])", since)
+    if since != "all" and not m:
+        usage(2)
+    if not os.path.isdir(root):
+        print(f"madopt: no such dir: {root}", file=sys.stderr)
+        sys.exit(2)
+    cutoff = None
+    if m:
+        unit = {"d": "days", "h": "hours", "m": "minutes"}[m.group(2)]
+        cutoff = datetime.now(timezone.utc) - timedelta(**{unit: int(m.group(1))})
+
+    counts = {c: 0 for c in RAW}
+    used, shapes, excluded = {}, {}, {"vass": 0, "other": 0}
+    files = unreadable = 0
+    for dirpath, _, names in os.walk(root):
+        for name in names:
+            path = os.path.join(dirpath, name)
+            if not name.endswith(".jsonl"):
+                continue
+            if cutoff and datetime.fromtimestamp(os.path.getmtime(path), timezone.utc) < cutoff:
+                continue
+            try:
+                fh = open(path, errors="replace")
+            except OSError:
+                unreadable += 1
+                continue
+            files += 1
+            with fh:
+                for line in fh:
+                    if '"tool_use"' not in line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if rec.get("type") != "assistant":
+                        continue
+                    ts = rec.get("timestamp", "")
+                    if cutoff and ts:
+                        when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        if (when if when.tzinfo else when.replace(tzinfo=timezone.utc)) < cutoff:
+                            continue
+                    for c in rec.get("message", {}).get("content", []):
+                        if not isinstance(c, dict) or c.get("type") != "tool_use":
+                            continue
+                        inp = c.get("input") or {}
+                        if c.get("name") == "Bash":
+                            cmd = inp.get("command", "")
+                            hit = classify(cmd)
+                            if hit and VASS.search(f"{rec.get('cwd', '')}\n{cmd}"):
+                                excluded["vass"] += 1
+                            elif hit and hit[1] == "other":
+                                excluded["other"] += 1
+                            elif hit and hit[0] == "harness":
+                                used[hit[1]] = used.get(hit[1], 0) + 1
+                            elif hit:
+                                counts[hit[1]] += 1
+                                shapes[hit[2]] = shapes.get(hit[2], 0) + 1
+                        elif c.get("name") in ("Edit", "Write") and inp.get("file_path", "").endswith("/version.php"):
+                            counts["version"] += 1
+                            shape = c["name"] + " version.php"
+                            shapes[shape] = shapes.get(shape, 0) + 1
+
+    raw, har = sum(counts.values()), sum(used.values())
+    total = raw + har
+    print(f"madopt: {files} jsonl under {root}, since {since}")
+    print(f"raw {raw}: " + " ".join(f"{c} {counts[c]}" for c in RAW))
+    print(f"harness {har}: " + " ".join(f"{k} {v}" for k, v in sorted(used.items(), key=lambda kv: -kv[1])))
+    print(f"excluded {sum(excluded.values())}: vass {excluded['vass']} other {excluded['other']}")
+    print(f"adoption {round(100 * har / total) if total else 0}% (harness {har} / {total} calls)")
+    if top:
+        print(f"raw shapes (top {top}):")
+        for shape, n in sorted(shapes.items(), key=lambda kv: (-kv[1], kv[0]))[:top]:
+            print(f"{n} {shape}")
+    if unreadable:
+        print(f"madopt: {unreadable} unreadable jsonl skipped", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

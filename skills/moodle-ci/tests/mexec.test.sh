@@ -42,4 +42,13 @@ check "$(run "$T/pub/www/public/local/x" admin/tool/phpunit/cli/init.php)" $'php
 check "$(run "$T/pub/www/public/local/x" pwd)" "$T/pub/www"$'\nrc=0' "5.2: non-php command stays in dirroot"
 check "$(run "$T/none/local/x" admin/cli/purge_caches.php)" $'mexec: no running Moodle container mounts '"$T/none/local/x"$' (not inside a Moodle code tree, or its env is stopped)\nrc=2' "unknown dir: rc 2 with reason"
 check "$(run "$T/flat/www")" $'usage: mexec <script.php|cmd> [args...]  (run from inside a Moodle code tree)\nrc=2' "no args: rc 2 usage"
+mkdir -p "$T/nodocker"; printf '#!/bin/sh\ntouch "%s/docker-called"; exit 99\n' "$T" > "$T/nodocker/docker"; chmod +x "$T/nodocker/docker"
+for h in --help -h; do
+    o="$(cd /tmp && PATH="$T/nodocker:$PATH" "$S" $h 2>&1; echo "rc=$?")"
+    check "$(grep -c '^usage: mexec' <<<"$o") $(grep -c '^Examples:' <<<"$o") $(grep -c '^Exit:' <<<"$o") ${o##*$'\n'}" "1 1 1 rc=0" "$h: usage, examples, exit codes, rc 0"
+done
+check "$([ -e "$T/docker-called" ] && echo called || echo none)" none "--help never calls docker"
+nohelp=""
+for f in "${S%/*}"/*; do [ -f "$f" ] && [ -x "$f" ] || continue; o="$(cd /tmp && "$f" --help 2>&1)" && grep -qi usage <<<"$o" || nohelp+=" ${f##*/}"; done
+check "${nohelp:-none}" none "every script in scripts/ prints usage with rc 0 on --help"
 exit $bad

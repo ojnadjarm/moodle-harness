@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Run a PHP snippet, file or stdin with Moodle bootstrapped, as www-data in the container that mounts the cwd.
+# Usage: mphp [--admin] <'php code'|file.php|->   e.g. mphp 'echo $DB->count_records("user");'
+# Inserts CLI_SCRIPT, config.php (dirroot, else public/) and `global $CFG, $DB, $USER;` after any leading declare() and
+# `namespace x;` or inside the first `namespace x {`; a leading <?php is dropped. Code with a top-level require/include of
+# config.php runs as is (no header, --admin ignored) in the file's dir, or the cwd for snippets and stdin.
+# --admin: run as the main admin user. Exit: PHP's rc; 2 usage or no container.
+set -uo pipefail
+
+usage() { echo "usage: mphp [--admin] <'php code'|file.php|->  (run from inside a Moodle code tree; - reads stdin; --admin is ignored for code that requires config.php itself)"; }
+admin=""
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    --admin) admin='\core\session\manager::set_user(get_admin());'; shift ;;
+esac
+[ $# -eq 1 ] || { usage >&2; exit 2; }
+
+file=""
+if [ "$1" = - ]; then code="$(cat)"
+elif [ -f "$1" ]; then code="$(cat -- "$1")"; file="$1"
+else code="$1"
+fi
+
+IFS=$'\t' read -r C D < <("$HOME/.claude/hooks/moodle-container.sh" "$PWD") \
+    || { echo "mphp: no running Moodle container mounts $PWD (not inside a Moodle code tree, or its env is stopped)" >&2; exit 2; }
+
+if perl -0777 -ne 's{/\*.*?\*/}{}gs; s{(?://|\#(?!\[))[^\n]*}{}g;
+        exit !m{(?:\A|[;{}]|<\?php)\s*(?:require|include)(?:_once)?\b\s*\(?[^;]*config\.php[\x27"]}' <<<"$code"; then
+    echo "mphp: ${file:-the code} requires config.php itself; running it as is, without the header${admin:+ (--admin ignored)}" >&2
+    h="$PWD"; [ -n "$file" ] && h="$(cd "$(dirname -- "$file")" && pwd)"
+    r="$h"; w="$D"
+    until [ -f "$r/vendor/bin/phpunit" ] || [ "$r" = / ]; do r="$(dirname "$r")"; done
+    [ "$r" != / ] && w="$D${h#"$r"}"
+    perl -0777 -ne 'exit !/\A(?:#![^\n]*\n)?\s*<\?php/' <<<"$code" || code="<?php $code"
+    exec docker exec -i -u www-data -w "$w" "$C" php <<<"$code"
+fi
+
+code="$(printf '%s' "$code" | sed '1{/^#!/d}' | sed -z 's/^[[:space:]]*<?php//')"
+head="define('CLI_SCRIPT', true); require(is_file('$D/config.php') ? '$D/config.php' : '$D/public/config.php'); global \$CFG, \$DB, \$USER;"
+code="$(printf '%s' "$code" | H="$head $admin" perl -0777 -pe '
+    my $c = qr{(?:\s|//[^\n]*|\#(?!\[)[^\n]*|/\*.*?\*/)*}s;
+    s{\A($c(?:declare\s*\([^)]*\)\s*;)?$c(?:namespace\s+[\w\\]+\s*;|namespace(?:\s+[\w\\]+)?\s*\{)?)}{$1 $ENV{H} }s')"
+exec docker exec -i -u www-data -w "$D" "$C" php <<<"<?php $code"

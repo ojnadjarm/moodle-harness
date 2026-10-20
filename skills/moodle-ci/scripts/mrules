@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Lint a plugin for the owner's guideline rules that phpcs does not catch.
+
+Usage: mrules [plugin-dir]   (default: $PWD)
+  Prints `file:line rule SEVERITY message`, then a summary line. vendor/, node_modules/, .git/,
+  amd/build/, yui/build/ and thirdpartylibs.xml locations are skipped.
+  FAIL ticket-id         `ABC-123` anywhere, comments included (lang/, .svg, UPGRADING.md, readme*, upgrade.txt,
+                         CHANGES* (no extension or .md/.txt/.markdown/.rst) and
+                         thirdpartylibs.xml skipped; UTF-8, PSR-4 allowed)
+  FAIL suppression       phpcs:ignore / phpcs:disable / @codingStandardsIgnore / eslint-disable
+  FAIL reflection        Reflection* in tests/ code
+  FAIL class-name        tests/**/*_test.php declares no class named after the file
+  FAIL covers-attribute  #[Covers*] in tests/ while $plugin->requires < 5.0 (use @covers)
+  WARN confirm-page      $OUTPUT->confirm() page (use a core/notification modal)
+  WARN banned-class      badge-*, btn-danger or alert-* in the plugin's own templates/*.mustache
+  Code-only rules (reflection, class-name, covers-attribute, confirm-page) ignore PHP comments;
+  banned-class ignores {{! }} comments.
+Exit: 1 any FAIL, 0 clean or WARN only, 2 usage.
+"""
+
+import os
+import re
+import sys
+
+SKIPDIRS = {"vendor", "node_modules", ".git"}
+TICKET = re.compile(r"\b([A-Z][A-Z0-9]+)-[0-9]+\b")
+NOTTICKET = {"UTF", "ISO", "SHA", "AES", "RSA", "PSR"}
+CHANGELOG = re.compile(r"(?i)^(?:upgrading\.md|upgrade\.txt|thirdpartylibs\.xml|(?:readme|changes)(?:[^.]*|.*\.(?:md|txt|markdown|rst)))$")
+SUPPRESS = re.compile(r"phpcs:(?:ignore|disable)\w*|@codingStandardsIgnore\w*|eslint-disable[\w-]*")
+REFLECTION = re.compile(r"(?<![\w$])\\?Reflection\w*\b")
+CLASSDECL = re.compile(r"^[ \t]*(?:(?:final|abstract|readonly)\s+)*class\s+(\w+)(?:\s+extends\s+([\\\w]+))?", re.M)
+GENERATED = {"amd", "yui"}
+THIRDPARTY = re.compile(r"<location>\s*(.*?)\s*</location>", re.S)
+COVERSATTR = re.compile(r"#\[\s*\\?(?:PHPUnit\\Framework\\Attributes\\)?(Covers\w*)")
+CONFIRM = re.compile(r"(?:\$OUTPUT|\$output|->output)\s*->\s*confirm\s*\(")
+BANNED = re.compile(r"(?<![\w-])(badge-[\w-]+|btn-danger|alert-[\w-]+)")
+MUSTACHECOMMENT = re.compile(r"\{\{!.*?\}\}", re.S)
+REQUIRES = re.compile(r"\$plugin->requires\s*=\s*['\"]?(\d+)")
+MOODLE50 = 2025041400
+IDENT = r"[A-Za-z_]\w*"
+
+
+def strip_comments(src):
+    """Blank PHP comments, keeping newlines so line numbers stay right."""
+    out, i, n = [], 0, len(src)
+    while i < n:
+        c = src[i]
+        if i == 0 or src.startswith("?>", i):
+            j = src.find("<?", i)
+            j = n if j < 0 else j + 2
+            out.append(src[i:j])
+            i = j
+            continue
+        doc = c == "<" and re.match(r"<<<[ \t]*(['\"]?)(" + IDENT + r")\1\r?\n", src[i:i + 200])
+        if doc:
+            end = re.compile(r"^[ \t]*" + doc.group(2) + r"\b", re.M).search(src, i + doc.end())
+            j = n if end is None else end.end()
+            out.append(src[i:j])
+            i = j
+        elif c in "'\"":
+            j = i + 1
+            while j < n and src[j] != c:
+                j += 2 if src[j] == "\\" else 1
+            out.append(src[i:j + 1])
+            i = j + 1
+        elif src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            out.append(re.sub(r"[^\n]", " ", src[i:j]))
+            i = j
+        elif src.startswith("//", i) or (c == "#" and not src.startswith("#[", i)):
+            j = min(k for k in (src.find("\n", i), src.find("?>", i), n) if k >= 0)
+            out.append(" " * (j - i))
+            i = j
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def blank(m):
+    return re.sub(r"[^\n]", " ", m.group(0))
+
+
+def lineno(text, pos):
+    return text.count("\n", 0, pos) + 1
+
+
+def thirdparty(base, rel):
+    """Plugin-relative paths listed in base/thirdpartylibs.xml."""
+    try:
+        with open(os.path.join(base, "thirdpartylibs.xml"), encoding="utf-8", errors="replace") as fh:
+            return {os.path.normpath(os.path.join(rel, loc)) for loc in THIRDPARTY.findall(fh.read())}
+    except OSError:
+        return set()
+
+
+def files(plugin):
+    """Yield (relative path, text) for every text file outside the skipped dirs."""
+    skip = set()
+    for base, dirs, names in os.walk(plugin):
+        rel = os.path.relpath(base, plugin)
+        skip |= thirdparty(base, rel)
+        dirs[:] = sorted(d for d in dirs if d not in SKIPDIRS and os.path.normpath(os.path.join(rel, d)) not in skip
+                         and not (d == "build" and os.path.basename(base) in GENERATED))
+        for name in sorted(names):
+            if os.path.normpath(os.path.join(rel, name)) in skip:
+                continue
+            path = os.path.join(base, name)
+            try:
+                with open(path, "rb") as fh:
+                    raw = fh.read()
+            except OSError:
+                continue
+            if b"\0" not in raw[:8192]:
+                yield os.path.normpath(os.path.join(rel, name)), raw.decode("utf-8", "replace")
+
+
+def requires(plugin):
+    try:
+        with open(os.path.join(plugin, "version.php"), encoding="utf-8", errors="replace") as fh:
+            m = REQUIRES.search(strip_comments(fh.read()))
+    except OSError:
+        return None
+    return int(m.group(1)) if m else None
+
+
+def check(rel, text, req):
+    """Yield (line, rule, severity, message) for one file."""
+    top = rel.split(os.sep)[0]
+    ext = os.path.splitext(rel)[1]
+    if top != "lang" and ext != ".svg" and not CHANGELOG.match(os.path.basename(rel)):
+        for m in TICKET.finditer(text):
+            if m.group(1) not in NOTTICKET:
+                yield lineno(text, m.start()), "ticket-id", "FAIL", f"{m.group(0)}: no ticket ids, say what the code does"
+    if ext in (".php", ".js"):
+        for m in SUPPRESS.finditer(text):
+            yield lineno(text, m.start()), "suppression", "FAIL", f"{m.group(0)}: fix the code, never suppress the checker"
+    if ext == ".php":
+        code = strip_comments(text)
+        if top == "tests":
+            for m in REFLECTION.finditer(code):
+                yield lineno(code, m.start()), "reflection", "FAIL", f"{m.group(0)}: test through the public API"
+            if rel.endswith("_test.php"):
+                decls = list(CLASSDECL.finditer(code))
+                want = os.path.basename(rel)[:-4]
+                if decls and want not in (d.group(1) for d in decls):
+                    m = next((d for d in decls if (d.group(2) or "").lower().endswith("testcase")), decls[0])
+                    yield lineno(code, m.start(1)), "class-name", "FAIL", f"class {m.group(1)} in {want}.php"
+            if req is not None and req < MOODLE50:
+                for m in COVERSATTR.finditer(code):
+                    yield lineno(code, m.start()), "covers-attribute", "FAIL", \
+                        f"#[{m.group(1)}] with requires {req} < 5.0: use @covers docblock tags"
+        for m in CONFIRM.finditer(code):
+            yield lineno(code, m.start()), "confirm-page", "WARN", "confirm page: use a core/notification modal"
+    if top == "templates" and ext == ".mustache":
+        tpl = MUSTACHECOMMENT.sub(blank, text)
+        for m in BANNED.finditer(tpl):
+            yield lineno(tpl, m.start()), "banned-class", "WARN", f"{m.group(1)}: keep a neutral palette in own markup"
+
+
+def main(argv):
+    if any(a in ("-h", "--help") for a in argv):
+        print(__doc__.strip())
+        return 0
+    if len(argv) > 1 or any(a.startswith("-") for a in argv):
+        print("mrules: usage: mrules [plugin-dir] (--help)", file=sys.stderr)
+        return 2
+    plugin = os.path.realpath(argv[0] if argv else os.getcwd())
+    if not os.path.isdir(plugin):
+        print(f"mrules: usage: not a directory: {plugin}", file=sys.stderr)
+        return 2
+    req = requires(plugin)
+    count = {"FAIL": 0, "WARN": 0}
+    for rel, text in files(plugin):
+        for no, rule, sev, msg in sorted(check(rel, text, req)):
+            print(f"{rel}:{no} {rule} {sev} {msg}")
+            count[sev] += 1
+    note = "" if req is not None else " (no $plugin->requires: covers-attribute skipped)"
+    print(f"mrules: {count['FAIL']} FAIL, {count['WARN']} WARN in {plugin}{note}")
+    return 1 if count["FAIL"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,13 +1,39 @@
 #!/usr/bin/env bash
 # Install a throwaway fixture plugin into a dev Moodle env and remove it cleanly.
-# Usage: mfixture add <env> <plugin-dir> | rm <env> <component> | with <env> <plugin-dir> -- <cmd...>
-#   env: a name under $MFIXTURE_ENVS (default ~/moodle-envs); only $MFIXTURE_ALLOW (default "5.2 5.3").
-# Exit: 0 ok; 1 step failed; 2 usage; 3 refused env or no container.
+# Usage: mfixture [--no-wait] add <env> <plugin-dir> | rm <env> <component> | with <env> <plugin-dir> -- <cmd...>
+#        mfixture status <env>
+#   add/rm/with hold flock ${XDG_RUNTIME_DIR:-/tmp}/mfixture-<env>.lock, waiting up to $MFIXTURE_WAIT s (600).
+#   env: a name under $MFIXTURE_ENVS (default ~/moodle-envs); only $MFIXTURE_ALLOW (default "5.2 5.3 lts45").
+#   with: <cmd> sees MFIXTURE_DIR (host path of the installed copy) and MFIXTURE_COMP.
+#   Log: mlog_new mfixture <component> (scripts/mlog).
+# Exit: 0 ok (status: free); 1 step failed (status: busy); 2 usage; 3 refused env or no container; 4 env locked.
 set -uo pipefail
+. "$(dirname "$(realpath "$0")")/mlog"
 
 die() { echo "mfixture: $2" >&2; exit "$1"; }
+usage() {
+    cat <<'EOF'
+usage: mfixture [--no-wait] add <env> <plugin-dir> | rm <env> <component> | with <env> <plugin-dir> -- <cmd...> | status <env>
+  Installs a throwaway fixture plugin into a dev Moodle env and removes it cleanly.
+  env: a name under $MFIXTURE_ENVS (default ~/moodle-envs); only $MFIXTURE_ALLOW (default "5.2 5.3 lts45").
+  add/rm/with hold one lock per env (${XDG_RUNTIME_DIR:-/tmp}/mfixture-<env>.lock) and wait up to
+  $MFIXTURE_WAIT seconds (default 600) for it; --no-wait exits 4 at once.
+  with: <cmd> sees MFIXTURE_DIR (host path of the installed copy) and MFIXTURE_COMP (component).
+  status <env>: the lock holder (pid, age, command) and the php processes in the app container.
+  Log: mlog_new mfixture <component>.
+Examples:
+  mfixture add 5.2 ./local_demo
+  mfixture rm 5.2 local_demo
+  mfixture with 5.2 ./local_demo -- mexec vendor/bin/phpunit --filter demo_test
+  mfixture status 5.2
+Exit: 0 ok (status: free); 1 step failed (status: busy); 2 usage; 3 refused env or no container; 4 env locked.
+EOF
+}
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 ENVS="${MFIXTURE_ENVS:-$HOME/moodle-envs}"
-ALLOW="${MFIXTURE_ALLOW:-5.2 5.3}"
+ALLOW="${MFIXTURE_ALLOW:-5.2 5.3 lts45}"
+WAIT="${MFIXTURE_WAIT:-600}"
+NOWAIT=; [ "${1:-}" = --no-wait ] && { NOWAIT=1; shift; }
 
 envroot() {
     local env="$1" root
@@ -21,18 +47,45 @@ envroot() {
 dx() { docker exec "$C" bash -c "cd '$D' && $1"; }
 phpq() { dx "php -r 'define(\"CLI_SCRIPT\",1);require \"config.php\";$1'"; }
 compof() { grep -hoP "\\\$plugin->component\s*=\s*'\K[^']+" "$1/version.php" 2>/dev/null; }
+newlog() { LOG="$(mlog_new mfixture "$1")" || die 1 "cannot create a log in $(mlog_dir "$1")"; }
+phperr() { grep -m2 -E '!!! .* !!!|Site is being upgraded|Fatal error:|Parse error:' | sed 's/^/mfixture: /' >&2; [ "${PIPESTATUS[0]}" = 0 ]; }
+
+holder() {
+    local pid t cmd
+    read -r pid t cmd <"$LOCK" 2>/dev/null || { echo "unknown holder"; return; }
+    echo "pid $pid, $(( $(date +%s) - t ))s, $cmd"
+}
+lock() {
+    LOCK="${XDG_RUNTIME_DIR:-/tmp}/mfixture-$1.lock"
+    exec 9>>"$LOCK" || die 1 "cannot open $LOCK"
+    if ! flock -n 9; then
+        [ -n "$NOWAIT" ] && die 4 "env $1 locked: $(holder)"
+        echo "mfixture: waiting for $(holder) (up to ${WAIT}s)" >&2
+        flock -w "$WAIT" 9 || die 4 "env $1 still locked after ${WAIT}s: $(holder)"
+    fi
+    printf '%s %s %s\n' $$ "$(date +%s)" "mfixture ${*:2}" >"$LOCK"
+}
+status() {
+    local busy=0 procs
+    LOCK="${XDG_RUNTIME_DIR:-/tmp}/mfixture-$1.lock"
+    if [ -e "$LOCK" ] && ! flock -n "$LOCK" true; then echo "lock: $(holder)"; busy=1; else echo "lock: free"; fi
+    procs="$(docker exec "$C" ps -eo pid,etime,args 2>/dev/null | awk 'NR > 1 && $3 ~ /(^|\/)php[0-9.]*$/')"
+    if [ -n "$procs" ]; then echo "php processes in $C:"; echo "$procs"; busy=1; else echo "php processes in $C: none"; fi
+    exit $busy
+}
 
 hostdir() {
-    local comp="$1" type name tdir
+    local comp="$1" type name tdir out
     [[ "$comp" =~ ^([a-z]+)_([a-z][a-z0-9_]*)$ ]] || die 2 "bad component: $comp"
     type="${BASH_REMATCH[1]}"; name="${BASH_REMATCH[2]}"
-    tdir="$(phpq "echo core_component::get_plugin_types()[\"$type\"] ?? \"\";" | tail -1)"
-    [[ "$tdir" == "$D"/* ]] || die 1 "unknown plugin type $type"
+    out="$(phpq "echo core_component::get_plugin_types()[\"$type\"] ?? \"\";" 2>&1)"
+    tdir="$(tail -1 <<<"$out")"
+    [[ "$tdir" == "$D"/* ]] || { phperr <<<"$out" && exit 1; die 1 "unknown plugin type $type"; }
     printf '%s/%s' "$ROOT${tdir#"$D"}" "$name"
 }
 
 upgrade() {
-    dx "php admin/cli/upgrade.php --non-interactive" >"$LOG" 2>&1 || { tail -5 "$LOG"; return 1; }
+    dx "php admin/cli/upgrade.php --non-interactive" >"$LOG" 2>&1 || { phperr <"$LOG" || tail -5 "$LOG"; return 1; }
     dx "php admin/cli/upgrade.php --is-pending" >/dev/null 2>&1 || { echo "mfixture: upgrade still pending" >&2; return 1; }
 }
 
@@ -56,6 +109,7 @@ add() {
     comp="$(compof "$src")" || die 2 "no \$plugin->component in $src/version.php"
     dir="$(hostdir "$comp")" || exit $?
     [ -e "$dir" ] && die 1 "$dir exists; run: mfixture rm <env> $comp"
+    newlog "$comp"
     trap 'cleanup "$comp" "$dir"; exit 1' INT TERM
     cp -a "$src" "$dir" || { rm -rf -- "$dir"; die 1 "copy failed"; }
     if ! upgrade; then cleanup "$comp" "$dir"; die 1 "upgrade failed; $comp removed, log $LOG"; fi
@@ -64,17 +118,19 @@ add() {
     echo "mfixture: installed $comp at $dir"
 }
 
-LOG="$(mktemp "${TMPDIR:-/tmp}/mfixture-XXXX.log")"
-verb="${1:-}"; [ $# -ge 3 ] || die 2 "usage: mfixture add <env> <dir> | rm <env> <component> | with <env> <dir> -- <cmd...>"
+verb="${1:-}"; [ $# -ge 3 ] || [ "$verb $#" = "status 2" ] || die 2 "usage: mfixture [--no-wait] add <env> <dir> | rm <env> <component> | with <env> <dir> -- <cmd...> | status <env>"
 envroot "$2"
+[ "$verb" = status ] && status "$2"
+case "$verb" in add|rm|with) lock "$2" "$@" ;; esac
 case "$verb" in
     add) add "$3" ;;
-    rm)  dir="$(hostdir "$3")" || exit $?; cleanup "$3" "$dir" || exit 1 ;;
+    rm)  dir="$(hostdir "$3")" || exit $?; newlog "$3"; cleanup "$3" "$dir" || exit 1 ;;
     with)
         [ "${4:-}" = -- ] && [ $# -ge 5 ] || die 2 "usage: mfixture with <env> <dir> -- <cmd...>"
         add "$3"
         trap 'rc=$?; cleanup "$COMP" "$DIR" || rc=1; exit $rc' EXIT
         trap 'exit 130' INT TERM
-        shift 4; "$@"; exit $? ;;
+        export MFIXTURE_DIR="$DIR" MFIXTURE_COMP="$COMP"
+        shift 4; "$@" 9>&-; exit $? ;;
     *) die 2 "unknown verb: $verb" ;;
 esac

@@ -1,0 +1,516 @@
+#!/usr/bin/env python3
+"""Flag core APIs a plugin uses that its $plugin->requires branch does not have yet, or that a later branch removed.
+
+Usage: mapicompat [plugin-dir] [--upgrading FILE] [--since X.Y] [--removed [--until X.Y]]
+  (default: $PWD; FILE: UPGRADING.md of the newest env under $MFIXTURE_ENVS (~/moodle-envs), 4.5*/vass*
+  never read; --since overrides requires). Symbols come from `## X.Y` > `#### Added` bullets: Class,
+  Class::method(), function(), hook classes; Behat, CSS and CLI bullets/blocks are skipped. Uses are searched
+  in the plugin's *.php with comments stripped, vendor/ and node_modules/ skipped.
+  Prints `file:line symbol added in X.Y (MDL-n)` for symbols added after the requires branch; a `->method(`
+  whose receiver class is unknown prints as `file:line unverified ...` and does not fail.
+--removed: reads `#### Removed` and `#### Deprecated` bullets of every branch after requires up to --until (default:
+  newest `## X.Y` in FILE) instead; prints `file:line symbol removed in X.Y (MDL-n)` (fail) or `... deprecated in X.Y`
+  (warn). Removed wins over deprecated; replacements ("in favour of", "use ... instead", a table's 2nd column) skipped.
+Hook classes (not --removed): a reference to a hook class in the newest `msrc` tree's */classes/hook/ that the
+  requires tree lacks prints `file:line \\x\\hook\\y added after X.Y` (fail); no requires tree prints a SKIP line.
+  Index cached in ${XDG_CACHE_HOME:-~/.cache}/moodle-harness/hookidx/ per tree (version.php mtime).
+Exit: 1 hits (--removed: removed hits only), 0 clean, 2 usage or no requires, 3 SKIP (no UPGRADING.md).
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+
+BRANCHING = {"4.0": 20220419, "4.1": 20221128, "4.2": 20230424, "4.3": 20231009, "4.4": 20240422,
+             "4.5": 20241007, "5.0": 20250414, "5.1": 20251006, "5.2": 20260420, "5.3": 20261005}
+ADDWORDS = re.compile(r"\b(new|added|adds?|introduced|includes|created|available|defines|provides)\b", re.I)
+PARAMWORDS = re.compile(r"\b(param(eter)?s?|arguments?|propert(y|ies)|attributes?)\b", re.I)
+NOTADDED = re.compile(r"\bnow (public|protected|private|static|final|abstract)\b|\bvisibility\b", re.I)
+SKIPBULLET = re.compile(r"\b(behat|css|scss|cli)\b", re.I)
+NOTNEW_BEFORE = {"to", "in", "into", "of", "from", "on", "by", "for", "with", "than", "extending"}
+NOCLASS = {"self", "static", "parent", "di", "this"}
+GLOBALOBJ = {"moodle_page": "PAGE", "moodle_database": "DB", "core_renderer": "OUTPUT"}
+IDENT = r"[A-Za-z_]\w*"
+QNAME = r"\\?" + IDENT + r"(?:\\" + IDENT + r")*"
+QMETHOD = re.compile(r"(?<![\w$\\>])(" + QNAME + r")::(" + r"[a-z_]\w*" + r")\b(?!\s*\\)")
+BAREFUNC = re.compile(r"(?<![\w$\\>:])(" + IDENT + r")\(")
+CLASSCTX = re.compile(r"`(" + QNAME + r")`\s+class\b|\bclass\s+`(" + QNAME + r")`|(?<![\w`])(" + IDENT + r"_\w*|"
+                      + IDENT + r"(?:\\" + IDENT + r")+)\s+class\b")
+MDL = re.compile(r"\bMDL-(\d+)")
+REMWORDS = re.compile(r"\b(removed?|removal|deprecated?|deprecates|deleted|dropped|no longer (available|supported|used|triggered|exists?))\b",
+                      re.I)
+REPLACED = re.compile(r"\b(in favou?r of|instead|replaced|replacement|moved to|use|call|via|should|still|but|which|"
+                      r"wrapper|equivalent)\b", re.I)
+REMSKIP = re.compile(r"\b(amd|yui|js|javascript|templates?|mustache)\b", re.I)
+REMCTX = re.compile(r"`(" + QNAME + r")`\s+methods\b")
+CONST = re.compile(r"[A-Z][A-Z0-9]*_[A-Z0-9_]+")
+SPECIAL = re.compile(r"[?<'\"/#]")
+MSRC = os.path.join(os.path.dirname(os.path.realpath(__file__)), "msrc")
+HOOKREF = re.compile(r"(?<![\w\\])\\?((?:" + IDENT + r"\\)+hook\\" + IDENT + r"(?:\\" + IDENT + r")*)")
+HOOKDECL = re.compile(r"^\s*(?:(?:final|abstract|readonly)\s+)*(?:class|interface|trait|enum)\s+(" + IDENT + ")", re.M)
+
+
+def die(code, msg):
+    print(f"mapicompat: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def vkey(v):
+    return tuple(int(x) for x in v.split("."))
+
+
+def namespaced(q):
+    return "\\" in q.lstrip("\\")
+
+
+def normcls(c):
+    """Return a class name with a leading backslash when namespaced, none when global."""
+    c = c.lstrip("\\")
+    return "\\" + c if "\\" in c else c
+
+
+def bullets(text, want=("added",)):
+    """Yield (version, section, bullet lines) for every bullet under ## X.Y > #### <a section in want>."""
+    ver, sec, cur = None, None, None
+    for line in text.splitlines():
+        m = re.match(r"^## (\d+\.\d+)\s*$", line)
+        if m or line.startswith("#"):
+            if cur:
+                yield ver, sec, cur
+            cur = None
+            if m:
+                ver, sec = m.group(1), None
+            elif line.startswith("#### "):
+                sec = line[5:].strip().lower()
+                sec = sec if sec in want else None
+            elif line.startswith("### "):
+                sec = None
+            continue
+        if not (ver and sec):
+            continue
+        if line.startswith("- "):
+            if cur:
+                yield ver, sec, cur
+            cur = [line[2:]]
+        elif cur is not None:
+            cur.append(line)
+    if cur:
+        yield ver, sec, cur
+
+
+def split_bullet(lines):
+    """Return (prose, code lines) where code is php/plain fenced blocks plus table rows."""
+    prose, code, fence = [], [], None
+    for line in lines:
+        s = line.strip()
+        if s.startswith("```"):
+            fence = None if fence is not None else (s[3:].strip().lower() or "php")
+            continue
+        if fence is not None:
+            if fence == "php":
+                code.append(s)
+        elif s.startswith("|"):
+            code.append(s)
+        else:
+            prose.append(s)
+    return " ".join(p for p in prose if p), code
+
+
+def first_sentence(prose):
+    return re.split(r"(?<=[.!?])\s", prose, maxsplit=1)[0]
+
+
+def calls_in(sent, ctx, prose):
+    """Return the Class::method(), method() and function() symbols named in one sentence."""
+    out, quals = set(), set()
+    ctx = normcls(ctx) if ctx else None
+    for m in QMETHOD.finditer(sent):
+        if m.group(1).lstrip("\\").lower() not in NOCLASS and m.group(2) != "__construct":
+            out.add(("method", m.group(2), normcls(m.group(1))))
+            quals.add(m.start(2))
+    for m in BAREFUNC.finditer(sent):
+        name = m.group(1)
+        if name == "__construct" or m.start(1) in quals or sent[max(0, m.start() - 2):m.start()] == "::":
+            continue
+        if ctx or re.search(r"\b(methods?|setter|getter)\b", sent, re.I) or re.search(r"\bclass\b", prose, re.I):
+            out.add(("method", name, ctx))
+        if not ctx and not re.search(r"\bclass\b", sent, re.I):
+            out.add(("function", name, None))
+    return out
+
+
+def symbols_of(prose, code):
+    """Return a set of (kind, name, class) for one Added bullet."""
+    out = set()
+    if SKIPBULLET.search(first_sentence(prose)):
+        return out
+    ctxm = CLASSCTX.search(prose)
+    ctx = next(g for g in ctxm.groups() if g) if ctxm else None
+    for sent in re.split(r"(?<=[.!?:])\s+(?=[A-Z`\\])", prose):
+        if not ADDWORDS.search(sent) or PARAMWORDS.search(sent) or NOTADDED.search(sent):
+            continue
+        spans = [(m.start(), m.group(1)) for m in re.finditer(r"`([^`]+)`", sent)]
+        out |= calls_in(sent, ctx, prose)
+        for pos, span in spans:
+            if not re.fullmatch(QNAME, span) or not namespaced(span):
+                continue
+            before = sent[:pos].split()
+            if re.search(r"\bnew\b", sent[:pos], re.I) and (not before or before[-1].lower() not in NOTNEW_BEFORE):
+                out.add(("class", span.lstrip("\\"), None))
+    if code and re.search(r"\bnew\b", prose, re.I):
+        for line in code:
+            for m in QMETHOD.finditer(line):
+                cls, meth = m.group(1), m.group(2)
+                if namespaced(cls) and "_" in meth:
+                    out.add(("method", meth, normcls(cls)))
+            if line.startswith("|"):
+                for span in re.findall(r"`([^`]+)`", line):
+                    if re.fullmatch(QNAME, span) and namespaced(span):
+                        out.add(("class", span.lstrip("\\"), None))
+    return out
+
+
+def span_symbols(span):
+    """Return the symbol one backticked table cell span names: Class::method(), function(), \\Class or CONSTANT."""
+    m = re.fullmatch(r"(" + QNAME + r")::(" + IDENT + r")(\(.*\))?", span)
+    if m:
+        return {("method", m.group(2), normcls(m.group(1)))} if m.group(1).lstrip("\\").lower() not in NOCLASS else set()
+    m = re.fullmatch(r"\\?(" + IDENT + r")\(.*\)", span)
+    if m:
+        return {("function", m.group(1), None)}
+    if re.fullmatch(QNAME, span) and (span.startswith("\\") or namespaced(span)):
+        return {("class", span.lstrip("\\"), None)}
+    return {("constant", span, None)} if CONST.fullmatch(span) else set()
+
+
+def removals_of(prose, code):
+    """Return a set of (kind, name, class) for one Removed or Deprecated bullet, replacements left out."""
+    out, lead = set(), None
+    prose = re.sub(r"\s*For more information see .*$", "", prose)
+    for seg in re.split(r"(?:^|\s)-\s+(?=[`\\\w])", prose):
+        seg = seg.strip()
+        if lead and re.fullmatch(r"(`[^`]+`|[^\s`]+)([.,;].*)?", seg):
+            seg = lead[:-1] + " " + seg
+        else:
+            lead = seg if seg.endswith(":") else None
+        first = first_sentence(seg)
+        if not seg or SKIPBULLET.search(first) or REMSKIP.search(first):
+            continue
+        ctxm = CLASSCTX.search(seg) or REMCTX.search(seg)
+        ctx = next(g for g in ctxm.groups() if g) if ctxm else None
+        for sent in re.split(r"(?<=[.!?:])\s+(?=[A-Z`\\])", seg):
+            if not REMWORDS.search(sent):
+                continue
+            cut = sent[:m.start()] if (m := REPLACED.search(sent)) else sent
+            if PARAMWORDS.search(cut) or NOTADDED.search(cut) or re.search(r"\$\w", cut):
+                continue
+            out |= calls_in(cut, ctx, seg)
+            for m in re.finditer(r"`([^`]+)`", cut):
+                span, before = m.group(1), [w.lower() for w in cut[:m.start()].split()]
+                if before and before[-1] in ("the", "a", "an"):
+                    before = before[:-1]
+                if CONST.fullmatch(span) and re.search(r"\bconstants?\b", cut, re.I):
+                    out.add(("constant", span, None))
+                elif re.fullmatch(QNAME, span) and (span.startswith("\\") or namespaced(span)) \
+                        and not (before and before[-1] in NOTNEW_BEFORE):
+                    out.add(("class", span.lstrip("\\"), None))
+            for m in re.finditer(r"\b(" + CONST.pattern + r")\s+constant\b", cut):
+                out.add(("constant", m.group(1), None))
+    for line in code:
+        cells = line.split("|")
+        if line.startswith("|") and len(cells) > 2:
+            for span in re.findall(r"`([^`]+)`", cells[1]):
+                out |= span_symbols(span.strip())
+    return out
+
+
+def parse(text, removed=False):
+    """Return {(kind, name, class): {section: (version, MDL)}} keeping the oldest version per section."""
+    syms = {}
+    want = ("removed", "deprecated") if removed else ("added",)
+    for ver, sec, lines in bullets(text, want):
+        prose, code = split_bullet(lines)
+        mdl = MDL.findall(prose)
+        ref = f"MDL-{mdl[-1]}" if mdl else "no MDL"
+        for sym in (removals_of if removed else symbols_of)(prose, code):
+            got = syms.setdefault(sym, {})
+            if sec not in got or vkey(ver) < vkey(got[sec][0]):
+                got[sec] = (ver, ref)
+    return syms
+
+
+def strip_comments(src, strings=False):
+    """Blank PHP comments (and strings, heredocs and inline HTML when strings), keeping newlines for line numbers."""
+    out, i, n = [], 0, len(src)
+    keep = (lambda t: re.sub(r"[^\n]", " ", t)) if strings else (lambda t: t)
+    while i < n:
+        c = src[i]
+        if i == 0 or src.startswith("?>", i):
+            j = src.find("<?", i)
+            j = n if j < 0 else j + 2
+            out.append(keep(src[i:j]))
+            i = j
+            continue
+        doc = c == "<" and re.match(r"<<<[ \t]*(['\"]?)(" + IDENT + r")\1\r?\n", src[i:i + 200])
+        if doc:
+            end = re.compile(r"^[ \t]*" + doc.group(2) + r"\b", re.M).search(src, i + doc.end())
+            j = n if end is None else end.end()
+            out.append(keep(src[i:j]))
+            i = j
+        elif c in "'\"":
+            j = i + 1
+            while j < n and src[j] != c:
+                j += 2 if src[j] == "\\" else 1
+            out.append(c + keep(src[i + 1:j]) + src[j:j + 1])
+            i = j + 1
+        elif src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            out.append(re.sub(r"[^\n]", " ", src[i:j]))
+            i = j
+        elif src.startswith("//", i) or (c == "#" and not src.startswith("#[", i)):
+            j = min(k for k in (src.find("\n", i), src.find("?>", i), n) if k >= 0)
+            out.append(" " * (j - i))
+            i = j
+        else:
+            m = SPECIAL.search(src, i + 1)
+            j = m.start() if m else n
+            out.append(src[i:j])
+            i = j
+    return "".join(out)
+
+
+def pattern(kind, name, cls):
+    """Return (sure, unverified) regexes; unverified is a ->name( call on an unknown receiver."""
+    if kind == "function":
+        return re.compile(r"(?<![\w$>:\\])(?<!function )\\?" + re.escape(name) + r"\s*\("), None
+    if kind == "class":
+        lead = r"\\?" if namespaced(name) else r"\\"
+        return re.compile(r"(?<![\w\\])" + lead + re.escape(name) + r"\b(?!\\)"), None
+    if kind == "constant":
+        return re.compile(r"(?<![\w$>:\\'\"])\\?" + re.escape(name) + r"\b(?!\s*\()"), None
+    call = re.escape(name) + r"\s*\("
+    alt = []
+    if cls:
+        alt.append(r"(?<![\w$])" + re.escape(cls.lstrip("\\").split("\\")[-1]) + r"::" + call)
+        if cls in GLOBALOBJ:
+            alt.append(r"\$" + GLOBALOBJ[cls] + r"->" + call)
+    maybe = re.compile(r"->" + call) if "_" in name and not (cls and namespaced(cls)) else None
+    return (re.compile("|".join(alt)) if alt else None), maybe
+
+
+def bare_global(name):
+    """Return the regex for a global class used without its leading backslash."""
+    n = re.escape(name)
+    return re.compile(r"\b(?:new|extends|implements|instanceof)\s+" + n + r"\b(?!\\)|(?<![\w\\$>:'\"])" + n
+                      + r"\s*::|(?<![\w\\$>:])" + n + r"\s+\$")
+
+
+def label(kind, name, cls):
+    if kind == "constant":
+        return name
+    if kind == "class":
+        return "\\" + name
+    if kind == "function":
+        return name + "()"
+    return f"{cls}::{name}()" if cls else f"->{name}()"
+
+
+def requires_branch(plugin):
+    try:
+        with open(os.path.join(plugin, "version.php"), encoding="utf-8", errors="replace") as fh:
+            src = strip_comments(fh.read())
+    except OSError:
+        die(2, f"no version.php in {plugin} (use --since X.Y)")
+    m = re.search(r"\$plugin->requires\s*=\s*['\"]?(\d+)", src)
+    if not m:
+        die(2, f"no $plugin->requires in {plugin}/version.php (use --since X.Y)")
+    req, branch = int(m.group(1)), "0.0"
+    for b, date in BRANCHING.items():
+        if req >= date * 100:
+            branch = b
+    return branch
+
+
+def newest_branch(text):
+    vers = re.findall(r"^## (\d+\.\d+)\s*$", text, re.M)
+    return max(vers, key=vkey) if vers else "0.0"
+
+
+def default_upgrading():
+    root = os.environ.get("MFIXTURE_ENVS", os.path.expanduser("~/moodle-envs"))
+    try:
+        envs = [e for e in os.listdir(root) if re.fullmatch(r"\d+\.\d+", e) and not e.startswith("4.5")]
+    except OSError:
+        envs = []
+    for e in sorted(envs, key=vkey, reverse=True):
+        path = os.path.join(root, e, "www", "UPGRADING.md")
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def php_files(plugin):
+    for base, dirs, files in os.walk(plugin):
+        dirs[:] = sorted(d for d in dirs if d not in ("vendor", "node_modules", ".git"))
+        for f in sorted(files):
+            if f.endswith(".php"):
+                yield os.path.join(base, f)
+
+
+def tree_of(branch):
+    """Return the msrc code root of a branch, or None."""
+    r = subprocess.run([sys.executable, MSRC, branch], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def hook_index(root):
+    """Return the hook class names under root's */classes/hook/, cached per root keyed by version.php mtime."""
+    key = os.stat(os.path.join(root, "version.php")).st_mtime_ns
+    cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "moodle-harness",
+                         "hookidx", re.sub(r"\W", "_", root.strip("/")) + ".json")
+    try:
+        with open(cache, encoding="utf-8") as fh:
+            got = json.load(fh)
+        if got["key"] == key:
+            return set(got["hooks"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    hooks = set()
+    for base, dirs, files in os.walk(root):
+        parts = os.path.relpath(base, root).split(os.sep)
+        if parts[-1] == "classes":
+            dirs[:] = [d for d in dirs if d == "hook"]
+        elif "classes" in parts:
+            for f in (f for f in files if f.endswith(".php")):
+                with open(os.path.join(base, f), encoding="utf-8", errors="replace") as fh:
+                    src = strip_comments(fh.read())
+                ns, cls = re.search(r"^\s*namespace\s+([\w\\]+)\s*;", src, re.M), HOOKDECL.search(src)
+                if ns and cls:
+                    hooks.add(ns.group(1).lstrip("\\") + "\\" + cls.group(1))
+        else:
+            dirs[:] = [d for d in dirs if d not in ("vendor", "node_modules", ".git", "tests")]
+    try:
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        with open(cache, "w", encoding="utf-8") as fh:
+            json.dump({"key": key, "hooks": sorted(hooks)}, fh)
+    except OSError:
+        pass
+    return hooks
+
+
+def hook_check(plugin, branch, printed):
+    """Print plugin references to hook classes the newest msrc tree has and the requires tree lacks; return the hits."""
+    newer = sorted((b for b in BRANCHING if vkey(b) > vkey(branch)), key=vkey, reverse=True)
+    if not newer:
+        return 0
+    old = tree_of(branch)
+    new = old and next((t for t in map(tree_of, newer) if t), None)
+    if not new:
+        what = f"no {branch} tree (msrc {branch} --fetch)" if not old else f"no tree newer than {branch}"
+        print(f"mapicompat: SKIP hook classes: {what}")
+        return 0
+    added = hook_index(new) - hook_index(old)
+    hits = 0
+    for path in php_files(plugin):
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            raw = fh.read()
+        if "hook\\" not in raw:
+            continue
+        src = strip_comments(raw)
+        rel = os.path.relpath(path, plugin)
+        for no, line in enumerate(src.split("\n"), 1):
+            for name in dict.fromkeys(m.group(1) for m in HOOKREF.finditer(line)):
+                if name in added and (rel, no, "\\" + name) not in printed:
+                    print(f"{rel}:{no} \\{name} added after {branch}")
+                    hits += 1
+    print(f"mapicompat: {len(added)} hook classes in {new} not in {old}: {hits} uses")
+    return hits
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="mapicompat", add_help=False)
+    ap.add_argument("plugin", nargs="?", default=os.getcwd())
+    ap.add_argument("--upgrading")
+    ap.add_argument("--since")
+    ap.add_argument("--removed", action="store_true")
+    ap.add_argument("--until")
+    ap.add_argument("-h", "--help", action="store_true")
+    try:
+        a = ap.parse_args()
+    except SystemExit:
+        sys.exit(2)
+    if a.help:
+        print(__doc__.strip())
+        return 0
+    plugin = os.path.realpath(a.plugin)
+    if not os.path.isdir(plugin):
+        die(2, f"not a directory: {plugin}")
+    for opt in ("since", "until"):
+        if getattr(a, opt) is not None and not re.fullmatch(r"\d+\.\d+", getattr(a, opt)):
+            die(2, f"--{opt} needs X.Y")
+    if a.until and not a.removed:
+        die(2, "--until needs --removed")
+    branch = a.since or requires_branch(plugin)
+    upgrading = a.upgrading or default_upgrading()
+    if not upgrading or not os.path.isfile(upgrading):
+        die(3, f"SKIP: no UPGRADING.md ({upgrading or 'no env under ~/moodle-envs'})")
+    with open(upgrading, encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
+    until = a.until or newest_branch(text)
+    syms = {}
+    for sym, got in parse(text, a.removed).items():
+        for word in ("removed", "deprecated", "added"):
+            if word in got and vkey(branch) < vkey(got[word][0]) and (not a.removed or vkey(got[word][0]) <= vkey(until)):
+                syms[sym] = (word, *got[word])
+                break
+    pats = [(s[0], *pattern(*s), bare_global(s[1]) if s[0] == "class" and not namespaced(s[1]) else None, label(*s), s[1], v)
+            for s, v in sorted(syms.items(), key=lambda kv: label(*kv[0]))]
+    rank = {"removed": 0, "deprecated": 1, "added": 2}
+    count = {"added": 0, "removed": 0, "deprecated": 0, "unverified": 0}
+    printed = set()
+    for path in php_files(plugin):
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            raw = fh.read()
+        src, bare_src = strip_comments(raw), strip_comments(raw, strings=True)
+        local = re.search(r"^\s*namespace\s+\w", src, re.M) is not None
+        imported = set(re.findall(r"^\s*use\s+[\w\\]*\\(\w+)\s*;", src, re.M))
+        globs = set(re.findall(r"^\s*use\s+\\?(\w+)\s*;", src, re.M))
+        rel = os.path.relpath(path, plugin)
+        cand = [p for p in pats if p[5] in src]
+        for no, (line, code) in enumerate(zip(src.split("\n"), bare_src.split("\n")), 1):
+            here = [p for p in cand if p[5] in line]
+            if not here:
+                continue
+            found = [(lab, v) for kind, sure, _, bare, lab, name, v in here
+                     if (sure and sure.search(line if kind == "class" else code))
+                     or (bare and (name in globs or (not local and name not in imported)) and bare.search(code))]
+            for lab, (word, ver, ref) in found:
+                if not any(other.startswith(lab + "::") for other, _ in found):
+                    print(f"{rel}:{no} {lab} {word} in {ver} ({ref})")
+                    printed.add((rel, no, lab))
+                    count[word] += 1
+            unverified = {}
+            for _, sure, maybe, _, _, name, (word, ver, ref) in here:
+                if maybe and maybe.search(code) and not (sure and sure.search(code)):
+                    best = unverified.get(name)
+                    if not best or (rank[word], vkey(ver)) < (rank[best[0]], vkey(best[1])):
+                        unverified[name] = (word, ver, ref)
+            for name, (word, ver, ref) in unverified.items():
+                print(f"{rel}:{no} unverified ->{name}() {word} in {ver} ({ref})")
+                count["unverified"] += 1
+    if a.removed:
+        print(f"mapicompat: requires {branch}, until {until}, {len(syms)} symbols removed or deprecated later in "
+              f"{upgrading}: {count['removed']} removed, {count['deprecated']} deprecated, "
+              f"{count['unverified']} unverified")
+        return 1 if count["removed"] else 0
+    print(f"mapicompat: requires {branch}, {len(syms)} symbols added later in {upgrading}: {count['added']} uses, "
+          f"{count['unverified']} unverified")
+    hooks = hook_check(plugin, branch, printed)
+    return 1 if count["added"] or hooks else 0
+
+if __name__ == "__main__":
+    sys.exit(main())

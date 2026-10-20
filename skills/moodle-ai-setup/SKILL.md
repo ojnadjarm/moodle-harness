@@ -1,6 +1,6 @@
 ---
 name: moodle-ai-setup
-description: Set up a Moodle 4.5+ site's AI subsystem in one repeatable, idempotent step - provider instance (Ollama, OpenAI, Anthropic Claude on 5.3, ...), every placement and action on, placement capabilities for the chosen roles only, per-user and site-wide hourly request limits, and the AI usage policy text - then `--check` reads every value back. Use for "AI setup", "Moodle AI", "AI provider", "AI placements", "AI rate limit", "AI policy", "who gets AI", days 3-6 of the Moodle AI offer (ai-en).
+description: Set up a Moodle 4.5+ site's AI subsystem idempotently. Use for "AI setup", "Moodle AI", "AI provider", "AI placements", "AI rate limit", "AI policy", "who gets AI", days 3-6 of the AI offer (ai-en). Provider (Ollama, OpenAI, Claude), placements, role caps, hourly limits, policy; `--check`.
 ---
 
 # moodle-ai-setup - provider, placements, roles, limits, policy

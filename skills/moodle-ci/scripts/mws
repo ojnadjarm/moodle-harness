@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Call a web service function as a Moodle user through call_external_function (via mphp); no token or service setup.
+set -uo pipefail
+
+usage() {
+    cat <<'EOF'
+usage: mws [--env <name>] [--user <username|id>] [--ajax] <function> [key=value|key[]=v|key[sub]=v ...] [--json '{...}']
+       mws [--env <name>] --list [pattern]
+  Runs \core_external\external_api::call_external_function as a WS request (WS_SERVER) for the
+  user (default: admin) and prints the JSON result, or the exception with debuginfo and backtrace.
+  key=value args are parsed like a query string (values are strings; bools as 1/0); --json is merged
+  over them. --ajax passes ajaxonly=true (the function must have 'ajax' => true).
+  --list [pattern]  print the external_functions rows whose name contains pattern (TSV)
+  --env <name>      use ~/moodle-envs/<name> from any cwd ($MFIXTURE_ENVS honoured); default: the
+                    code tree holding the cwd; vass*, 4.5* and unknown names are refused
+Exit: 0 ok; 1 the call raised, unknown user or no --list match; 2 no running container (mphp);
+      64 usage or refusal.
+EOF
+}
+die() { echo "mws: $*" >&2; exit 64; }
+here="$(cd "$(dirname "$0")" && pwd)"
+
+env="" user="" ajax=0 list=0 json="" fn="" kv=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        --env) [ -n "${2:-}" ] || { usage >&2; exit 64; }; env="$2"; shift 2 ;;
+        --user) [ -n "${2:-}" ] || { usage >&2; exit 64; }; user="$2"; shift 2 ;;
+        --json) [ -n "${2:-}" ] || { usage >&2; exit 64; }; json="$2"; shift 2 ;;
+        --ajax) ajax=1; shift ;;
+        --list) list=1; shift ;;
+        -*) usage >&2; exit 64 ;;
+        *=*) [ -n "$fn" ] || [ "$list" = 1 ] || { usage >&2; exit 64; }; kv+=("$1"); shift ;;
+        *) [ -z "$fn" ] || { usage >&2; exit 64; }; fn="$1"; shift ;;
+    esac
+done
+[ "$list" = 1 ] && [ ${#kv[@]} -gt 0 ] && { usage >&2; exit 64; }
+[ "$list" = 1 ] || [ -n "$fn" ] || { usage >&2; exit 64; }
+[[ "$fn" =~ ^[A-Za-z0-9_.%-]*$ ]] || die "bad function name '$fn'"
+
+refused() { local r; r="$(realpath -m "$1")"
+    case "$r/" in */vass*|*/4.5*) die "$2 resolves to a refused env ($r; Vass and 4.5 are never touched)" ;; esac; }
+start="$PWD"
+if [ -n "$env" ]; then
+    envs="${MFIXTURE_ENVS:-$HOME/moodle-envs}"
+    case "$env" in vass*|4.5*) die "env '$env' is refused (Vass and 4.5 are never touched)" ;;
+        .*|*/*) die "env '$env' is not a name under $envs" ;; esac
+    [ -d "$envs/$env/www" ] || die "unknown env '$env' (no $envs/$env/www)"
+    refused "$envs/$env" "env '$env'"
+    start="$envs/$env/www"
+fi
+root="$start"
+until [ -f "$root/vendor/bin/phpunit" ] || [ "$root" = / ]; do root="$(dirname "$root")"; done
+[ "$root" != / ] || die "no Moodle code tree (vendor/bin/phpunit) above $start; pass --env <name>"
+refused "$root" "$root"
+
+b64() { printf '%s' "$1" | base64 -w0; }
+args=""; for a in ${kv[@]+"${kv[@]}"}; do args+="'$(b64 "$a")',"; done
+php=$(cat <<EOF
+<?php
+define('CLI_SCRIPT', true);
+define('WS_SERVER', true);
+require(is_file('config.php') ? 'config.php' : 'public/config.php');
+global \$CFG, \$DB;
+if ($list) {
+    \$rows = \$DB->get_records_select('external_functions', \$DB->sql_like('name', ':p', false),
+        ['p' => '%' . \$DB->sql_like_escape(base64_decode('$(b64 "$fn")')) . '%'], 'name',
+        'id, name, component, classname, methodname, capabilities');
+    echo "name\tcomponent\tclassname\tmethodname\tcapabilities\n";
+    foreach (\$rows as \$r) {
+        echo "\$r->name\t\$r->component\t\$r->classname\t\$r->methodname\t\$r->capabilities\n";
+    }
+    exit(\$rows ? 0 : 1);
+}
+\$u = base64_decode('$(b64 "$user")');
+\$user = \$u === '' ? get_admin() : \$DB->get_record('user', [(ctype_digit(\$u) ? 'id' : 'username') => \$u, 'deleted' => 0]);
+if (!\$user) {
+    fwrite(STDERR, "mws: no user '\$u'\n");
+    exit(1);
+}
+\core\session\manager::set_user(\$user);
+\$q = [];
+foreach ([$args] as \$a) {
+    [\$k, \$v] = explode('=', base64_decode(\$a), 2);
+    \$q[] = \$k . '=' . rawurlencode(\$v);
+}
+parse_str(implode('&', \$q), \$params);
+\$j = base64_decode('$(b64 "$json")');
+if (\$j !== '') {
+    \$o = json_decode(\$j, true);
+    if (!is_array(\$o)) {
+        fwrite(STDERR, "mws: --json is not a JSON object\n");
+        exit(64);
+    }
+    \$params = array_replace_recursive(\$params, \$o);
+}
+\$CFG->debug = DEBUG_DEVELOPER;
+\$CFG->debugdisplay = 0;
+\$api = class_exists('\core_external\external_api') ? '\core_external\external_api' : 'external_api';
+if (\$api === 'external_api') {
+    require_once(\$CFG->libdir . '/externallib.php');
+}
+ob_start();
+\$r = \$api::call_external_function(base64_decode('$(b64 "$fn")'), \$params, (bool)$ajax);
+fwrite(STDERR, ob_get_clean());
+echo json_encode(\$r['error'] ? \$r['exception'] : \$r['data'],
+    JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR), "\n";
+exit(\$r['error'] ? 1 : 0);
+EOF
+)
+cd "$root" || die "cannot cd to $root"
+{ "$here/mphp" - <<<"$php" 2>&1 1>&3 | grep -v '^mphp: the code requires config.php itself' >&2; } 3>&1
+exit "${PIPESTATUS[0]}"

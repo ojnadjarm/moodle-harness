@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scan a Moodle plugin tree for APIs that UPGRADING.md marks removed or deprecated, with an hours estimate."""
+"""Scan a Moodle plugin tree for APIs that UPGRADING.md marks removed or deprecated, and lib.php callbacks that hooks replace."""
 import argparse
 import json
 import os
@@ -174,6 +174,68 @@ def scan(root, symbols):
     return hits
 
 
+def hook_map(core):
+    """Core tree to {legacy callback: hook class}, from replaces_callbacks attributes and get_deprecated_plugin_callbacks()."""
+    out = {}
+    for dirpath, dirs, files in os.walk(core):
+        dirs[:] = sorted(d for d in dirs if d not in (".git", "node_modules", "vendor", "tests"))
+        if "classes" not in dirpath.split(os.sep):
+            continue
+        for f in sorted(files):
+            if not f.endswith(".php"):
+                continue
+            with open(os.path.join(dirpath, f), encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+            attr = re.search(r"#\[\\?(?:core\\)?attribute\\hook\\replaces_callbacks\((.*?)\)\]", text, re.S)
+            meth = re.search(r"function get_deprecated_plugin_callbacks\(\)[^{]*\{\s*return\s*\[(.*?)\]", text, re.S)
+            cls = re.search(rf"^(?:final |abstract )?class ({IDENT})", text, re.M)
+            if not cls or not (attr or meth):
+                continue
+            ns = re.search(rf"^namespace ({NS});", text, re.M)
+            fqn = (ns.group(1).lstrip("\\") + "\\" if ns else "") + cls.group(1)
+            for cb in re.findall(r"['\"](\w+)['\"]", (attr or meth).group(1)):
+                out.setdefault(cb, fqn)
+    return out
+
+
+def component_of(root):
+    """Plugin component from version.php, else the directory name."""
+    try:
+        with open(os.path.join(root, "version.php"), encoding="utf-8", errors="replace") as fh:
+            m = re.search(r"\$plugin->component\s*=\s*['\"](\w+)['\"]", fh.read())
+    except OSError:
+        m = None
+    return m.group(1) if m else os.path.basename(os.path.normpath(root))
+
+
+def scan_hooks(root, hooks):
+    """lib.php functions <component>_<callback> whose hook has no db/hooks.php entry, as deprecated hits."""
+    def read(name):
+        try:
+            with open(os.path.join(root, name), encoding="utf-8", errors="replace") as fh:
+                return fh.read()
+        except OSError:
+            return ""
+    lib, registered = read("lib.php"), read("db/hooks.php").replace("\\\\", "\\")
+    comp = component_of(root)
+    prefixes = [comp + "_"] + ([comp[4:] + "_"] if comp.startswith("mod_") else [])
+    hits = []
+    for n, line in code_lines(lib):
+        m = re.match(rf"\s*function\s+({IDENT})\s*\(", line)
+        if not m:
+            continue
+        for pre in prefixes:
+            cb = m.group(1)[len(pre):] if m.group(1).startswith(pre) else None
+            fqn = hooks.get(cb)
+            if not fqn or re.search(rf"(?<!\w){re.escape(fqn.split(chr(92))[-1])}::class|['\"]\\?{re.escape(fqn)}['\"]",
+                                    registered):
+                continue
+            hits.append({"file": "lib.php", "line": n, "name": m.group(1), "kind": "callback", "severity": "deprecated",
+                         "version": "", "component": comp, "ref": "", "hook": fqn})
+            break
+    return hits
+
+
 def estimate(hits):
     """Rewrite hours: a fixed rate per removed and per deprecated hit."""
     return sum(HOURS[h["severity"]] for h in hits)
@@ -181,7 +243,8 @@ def estimate(hits):
 
 def render(hits, root):
     """Plain-text report: one line per hit, then a summary."""
-    rows = [f"{h['severity']:<10} {h['file']}:{h['line']}  {h['name']}  ({h['version']} {h['component']} {h['ref']})".rstrip()
+    rows = [f"{h['severity']:<10} {h['file']}:{h['line']}  {h['name']}  " +
+            (f"(hook {h['hook']})" if "hook" in h else f"({h['version']} {h['component']} {h['ref']})".rstrip())
             for h in hits]
     r = sum(h["severity"] == "removed" for h in hits)
     rows.append(f"{os.path.basename(os.path.normpath(root))}: {len(hits)} hits · removed {r} · "
@@ -195,6 +258,7 @@ def main(argv=None):
     p.add_argument("--upgrading", default=DEFAULT_UPGRADING, help="UPGRADING.md of the target release")
     p.add_argument("--from", dest="since", default="4.5", help="current site release (exclusive)")
     p.add_argument("--to", dest="until", default="5.3", help="target release (inclusive)")
+    p.add_argument("--core", help="target core tree for the hook map (default: the UPGRADING.md directory)")
     p.add_argument("--json", help="write hits and summary as JSON")
     p.add_argument("--symbols", action="store_true", help="print symbol counts per version and exit")
     a = p.parse_args(argv)
@@ -210,6 +274,13 @@ def main(argv=None):
     if not a.plugin:
         p.error("plugin directory required")
     hits = scan(a.plugin, symbols)
+    core = a.core or os.path.dirname(os.path.abspath(a.upgrading))
+    hooks = hook_map(core)
+    if not hooks:
+        print(f"warning: no hook classes found under {core} (not a Moodle core tree?); "
+              "legacy callbacks not checked, pass --core", file=sys.stderr)
+    hits += scan_hooks(a.plugin, hooks)
+    hits.sort(key=lambda h: (RANK[h["severity"]], h["file"], h["line"]))
     print(render(hits, a.plugin))
     if a.json:
         with open(a.json, "w", encoding="utf-8") as fh:

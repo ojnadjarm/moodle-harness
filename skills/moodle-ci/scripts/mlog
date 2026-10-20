@@ -1,0 +1,33 @@
+# Sourced by mtest, mmatrix, mfixture and the Stop hook: one log home per plugin component, pruned on every new log.
+#   mlog_dir <component>        ${XDG_STATE_HOME:-~/.local/state}/moodle-harness/logs/<component>
+#   mlog_new <tool> <component> create and print <dir>/<tool>-<stamp>.log; prune files older than
+#                               MLOG_DAYS (7) days and keep the MLOG_KEEP (50) newest logs; a log and its side files
+#                               (<log>.*) go together; one pruner per dir (flock .prune.lock); a log whose group
+#                               changed < 10 min ago always stays.
+#   mlog_component <plugin-dir> the $plugin->component of <plugin-dir>/version.php (either quote style).
+
+mlog_dir() { printf '%s/moodle-harness/logs/%s' "${XDG_STATE_HOME:-$HOME/.local/state}" "$1"; }
+
+mlog_component() { grep -hoP "\\\$plugin->component\s*=\s*['\"]\K[^'\"]+" "$1/version.php" 2>/dev/null | head -1; }
+
+mlog_prune() {
+    (
+        flock -n 9 || exit 0
+        n=0 now=$(date +%s); cut=$((now - 600)) old=$((now - ${MLOG_DAYS:-7} * 86400))
+        while IFS= read -r f; do
+            n=$((n + 1)); g=("$f" "$f".*)
+            [ "$(stat -c %Y -- "${g[@]}" 2>/dev/null | sort -n | tail -1)" -lt "$cut" ] || continue
+            { [ "$n" -gt "${MLOG_KEEP:-50}" ] || [ "$(stat -c %Y -- "$f")" -lt "$old" ]; } && rm -f -- "${g[@]}"
+        done < <(ls -1t -- "$1"/*.log 2>/dev/null)
+        find "$1" -maxdepth 1 -type f -name '*.log.*' -mmin +$(( ${MLOG_DAYS:-7} * 1440 )) 2>/dev/null |
+            while IFS= read -r g; do [ -e "${g%.log.*}.log" ] || rm -f -- "$g"; done
+    ) 9>"$1/.prune.lock"
+}
+
+mlog_new() {
+    [ -n "${1:-}" ] && [ -n "${2:-}" ] || { echo "mlog_new: usage: mlog_new <tool> <component>" >&2; return 2; }
+    local d f; d="$(mlog_dir "$2")"
+    mkdir -p "$d" && f="$(mktemp "$d/$1-$(date +%Y%m%d-%H%M%S)-XXXX.log")" || return 1
+    mlog_prune "$d"
+    printf '%s\n' "$f"
+}

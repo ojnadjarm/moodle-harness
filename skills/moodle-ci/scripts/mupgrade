@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Run upgrade.php and purge_caches for the plugin holding the cwd, then read its DB version back.
+set -uo pipefail
+
+usage() {
+    cat <<'EOF'
+usage: mupgrade [plugin-dir]   (default: $PWD; walks up to version.php with $plugin->component)
+  Runs admin/cli/upgrade.php --non-interactive, then admin/cli/purge_caches.php (nice -n 19, as
+  www-data) in the container mexec finds, then reads config_plugins.version back through mdb and
+  prints "<component> <old> -> <new>". A changed version prints a phpunit-init-stale hint;
+  init is never run.
+  Vass paths (*vass*, moodle-envs/4.5*) are refused.
+Exit: 0 DB version == version.php; 1 upgrade.php/purge failed or DB version differs;
+      2 usage, Vass path, no plugin, no container, read-back failed.
+EOF
+}
+
+here="$(dirname "$(realpath "$0")")"
+die() { echo "mupgrade: $2" >&2; exit "$1"; }
+case "${1:-}" in -h|--help) usage; exit 0 ;; -*) usage >&2; exit 2 ;; esac
+[ $# -le 1 ] || { usage >&2; exit 2; }
+
+start="$(realpath -m "${1:-$PWD}")"
+case "${start,,}" in *vass*|*/moodle-envs/4.5*) die 2 "refused Vass path $start (never touched)" ;; esac
+plugin="$start"
+while [ "$plugin" != / ] && ! grep -qs '\$plugin->component' "$plugin/version.php"; do plugin="$(dirname "$plugin")"; done
+[ "$plugin" != / ] || die 2 "no version.php with \$plugin->component above $start"
+comp="$(grep -hoP "\\\$plugin->component\s*=\s*['\"]\K[^'\"]+" "$plugin/version.php" | head -1)"
+want="$(grep -vE '^\s*(//|#|/\*)' "$plugin/version.php" | grep -oP '\$plugin->version\s*=\s*\K[0-9.]+' | head -1)"
+[ -n "$comp" ] && [ -n "$want" ] || die 2 "no \$plugin->component/version in $plugin/version.php"
+
+IFS=$'\t' read -r C D < <("$HOME/.claude/hooks/moodle-container.sh" "$plugin") \
+    || die 2 "no running Moodle container mounts $plugin (its env is stopped?)"
+
+dbver() {
+    local out
+    out="$(cd "$plugin" && "$here/mdb" "select value from {config_plugins} where plugin = ? and name = 'version'" "$comp")" \
+        || die 2 "read-back of $comp version failed"
+    out="$(sed -n 2p <<<"$out")"; echo "${out:-none}"
+}
+run() {
+    docker exec -i -u www-data -w "$D" "$C" sh -c \
+        'f=$1; shift; [ ! -e "$f" ] && [ -e "public/$f" ] && cd public; exec nice -n 19 php "$f" "$@"' mupgrade "$@"
+}
+
+old="$(dbver)" || exit 2
+for s in "admin/cli/upgrade.php --non-interactive" admin/cli/purge_caches.php; do
+    # shellcheck disable=SC2086
+    out="$(run $s </dev/null 2>&1)"; rc=$?
+    [ $rc = 0 ] || { tail -n 5 <<<"$out" >&2; die 1 "${s%% *} failed (rc $rc)"; }
+done
+new="$(dbver)" || exit 2
+
+echo "$comp $old -> $new"
+[ "$new" = "$old" ] || echo "mupgrade: phpunit init stale after a version change; run mtest init phpunit before tests"
+awk -v a="$new" -v b="$want" 'BEGIN { exit !(a == b + 0) }' || die 1 "DB version $new != version.php $want"

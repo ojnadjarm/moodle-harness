@@ -1,6 +1,6 @@
 ---
 name: moodle-upgrade-rehearsal
-description: Timed Moodle upgrade rehearsal on a throwaway upstream site (default 4.5 -> 5.3 LTS) - build and seed a 4.5 site with Classic, then backup, PostgreSQL 13 -> 17 move, code swap, /public docroot + PHP 8.4, admin/cli/upgrade.php, theme check, smoke login, each step timed, then a tested rollback and a Markdown report. Use for "upgrade rehearsal", "how long does the upgrade take", "price the upgrade offer", "dry-run upgrade", "test rollback".
+description: Timed Moodle upgrade rehearsal on a throwaway site (default 4.5 -> 5.3 LTS). Use for "upgrade rehearsal", "how long does the upgrade take", "price the upgrade offer", "dry-run upgrade", "test rollback". Backup, PG 13->17, code swap, /public + PHP 8.4, upgrade.php, smoke login, rollback.
 ---
 
 # moodle-upgrade-rehearsal — timed upgrade + rollback on a throwaway site

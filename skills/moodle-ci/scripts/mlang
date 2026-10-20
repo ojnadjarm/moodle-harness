@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""Check a plugin's lang/en strings against its uses: missing ids FAIL, unused ids WARN,
+lang/<xx> ids missing from or absent in lang/en WARN.
+Usage: mlang [plugin-dir]   (default: $PWD; the component is read from version.php)
+       mlang --sync <xx> [plugin-dir]   copy each lang/en id missing from lang/<xx> in, with the English text,
+         at its sorted place, above the comments of the next id and below the file header; existing and
+         commented-out ids untouched;
+         creates lang/<xx>/<file> with the lang/en header when absent; prints "synced N ids to lang/<xx>".
+  Uses: PHP get_string / new lang_string / get_strings / new [\\ns\\]*exception / string(s)_for_js /
+    addHelpButton and help_icon (id + id_help), mustache {{#str}} / {{#cleanstr}} / app plugin.<comp>.<id>,
+    amd/src and yui/src getString / getStrings / get_string, db/access.php caps, db/messages.php, db/caches.php,
+    db/mobile.php 'lang' => [[id, comp]] pairs.
+    Dynamic ids ('x_' . $y, strings_for_js($ids, ...)) are counted, not checked; their literal prefix silences unused.
+  Implicit (never unused): pluginname, modulename(plural), pluginadministration, capabilities,
+    messageprovider:*, cachedef_*, privacy:metadata*, search:*, and their _help/_link.
+Exit: 1 on a missing id (FAIL file:line id), else 0; 2 on usage (<xx> en or not ^[a-z]{2,3}(_[a-z]+)?$), no version.php.
+"""
+import os
+import re
+import sys
+
+SKIP_DIRS = {"vendor", "node_modules", ".git", "lang", "build"}
+IMPLICIT = {"pluginname", "modulename", "modulenameplural", "pluginadministration"}
+IMPLICIT_PREFIX = ("messageprovider:", "cachedef_", "privacy:metadata", "search:")
+LIT = r"""(['"])([^'"\\$]+)\1"""
+PAIR = re.compile(r"(?:\[|array\s*\()\s*" + LIT + r"""\s*,\s*['"](\w+)['"]\s*[\])]""")
+STMT = re.compile(r"""\$string\s*\[\s*(['"])([^'"]+)\1\s*\]\s*=(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|[^'";])+;""")
+COMMENT = {
+    "php": re.compile(r"""('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")|(//[^\n]*|#(?!\[)[^\n]*|/\*.*?\*/)""", re.S),
+    "js": re.compile(r"""('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`)|(//[^\n]*|/\*.*?\*/)""", re.S),
+}
+
+
+def die(rc, msg):
+    print(f"mlang: {msg}", file=sys.stderr)
+    sys.exit(rc)
+
+
+def strip_comments(src, kind):
+    """Blank comments, keeping newlines so offsets map to the same lines."""
+    return COMMENT[kind].sub(lambda m: m.group(1) or re.sub(r"[^\n]", " ", m.group(2)), src)
+
+
+def find_plugin(start):
+    p = os.path.realpath(start)
+    while p != "/":
+        v = os.path.join(p, "version.php")
+        if os.path.isfile(v):
+            m = re.search(r"""\$plugin->component\s*=\s*['"](\w+)['"]""", open(v, encoding="utf-8").read())
+            if m:
+                return p, m.group(1)
+        p = os.path.dirname(p)
+    die(2, f"no plugin version.php above {start}")
+
+
+def walk(plugin, exts):
+    for root, dirs, files in os.walk(plugin):
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
+        for f in sorted(files):
+            if f.endswith(exts):
+                yield os.path.join(root, f)
+
+
+class Uses:
+    def __init__(self, plugin, comps):
+        self.plugin, self.comps = plugin, comps
+        self.ids = {}
+        self.prefixes = set()
+        self.dynamic = 0
+
+    def add(self, sid, path, src, pos):
+        self.ids.setdefault(sid, (os.path.relpath(path, self.plugin), src.count("\n", 0, pos) + 1))
+
+    def dyn(self, expr):
+        self.dynamic += 1
+        m = re.match(r"""\s*(['"])([^'"\\$]+)""", expr)
+        if m:
+            self.prefixes.add(m.group(2))
+
+    def call(self, path, src, m, sid_expr, comp):
+        if comp not in self.comps:
+            return
+        lit = re.fullmatch(r"\s*" + LIT + r"\s*", sid_expr)
+        if lit:
+            self.add(lit.group(2), path, src, m.start())
+        else:
+            self.dyn(sid_expr)
+
+
+def collect(plugin, comp, short):
+    comps = {comp} | ({short} if comp.startswith("mod_") else set())
+    u = Uses(plugin, comps)
+    comp_re = r"""\s*,\s*['"](\w+)['"]"""
+    calls = r"(?:\bget_string|->\s*string_for_js|\bnew\s+lang_string|\bnew\s+\\?(?:\w+\\)*\w*exception)\s*\(\s*([^,()]+?)"
+    keyobj = r"\{[^{}]*\b(?:key\s*:[^{}]*\bcomponent|component\s*:[^{}]*\bkey)\s*:[^{}]*\}"
+    for path in walk(plugin, (".php",)):
+        src = strip_comments(open(path, encoding="utf-8", errors="replace").read(), "php")
+        for m in re.finditer(calls + comp_re, src):
+            u.call(path, src, m, m.group(1), m.group(2))
+        for m in re.finditer(r"\b(?:get_strings|strings_for_js)\s*\(\s*(?:\[|array\s*\()([^\])]*)[\])]" + comp_re, src):
+            if m.group(2) in comps:
+                for s in re.finditer(LIT, m.group(1)):
+                    u.add(s.group(2), path, src, m.start())
+        for m in re.finditer(r"\b(?:get_strings|strings_for_js)\s*\(\s*([^,()\[]+?)" + comp_re, src):
+            if m.group(2) in comps:
+                u.dyn(m.group(1))
+        for m in re.finditer(r"->(?:addHelpButton\s*\(\s*[^,]+,|help_icon\s*\()\s*([^,()]+?)" + comp_re, src):
+            u.call(path, src, m, m.group(1), m.group(2))
+            lit = re.fullmatch(r"\s*" + LIT + r"\s*", m.group(1))
+            if lit and m.group(2) in comps:
+                u.add(lit.group(2) + "_help", path, src, m.start())
+    for path in walk(os.path.join(plugin, "templates"), (".mustache",)):
+        src = open(path, encoding="utf-8", errors="replace").read()
+        for m in re.finditer(r"\{\{#(?:clean)?str\}\}\s*([^,{}]+?)\s*,\s*(\w+)", src):
+            if m.group(2) in comps:
+                u.add(m.group(1), path, src, m.start())
+        for m in re.finditer(r"\bplugin\.(\w+)\.([\w:]+)", src):
+            if m.group(1) in comps:
+                u.add(m.group(2), path, src, m.start())
+    mobile = os.path.join(plugin, "db", "mobile.php")
+    if os.path.isfile(mobile):
+        src = strip_comments(open(mobile, encoding="utf-8").read(), "php")
+        for m in re.finditer(r"""['"]lang['"]\s*=>\s*(?:\[|array\s*\()""", src):
+            end, depth = m.end(), 1
+            while depth and end < len(src):
+                depth += (src[end] in "[(") - (src[end] in "])")
+                end += 1
+            for pair in PAIR.finditer(src, m.end(), end):
+                if pair.group(3) in comps:
+                    u.add(pair.group(2), mobile, src, pair.start())
+    js = [p for d in ("amd/src", "yui/src") for p in walk(os.path.join(plugin, d), (".js", ".ts"))]
+    for path in js:
+        src = strip_comments(open(path, encoding="utf-8", errors="replace").read(), "js")
+        for m in re.finditer(r"\b(?:getString|get_string)\s*\(\s*([^,()]+?)" + comp_re, src):
+            u.call(path, src, m, m.group(1), m.group(2))
+        for m in re.finditer(keyobj, src):
+            k = re.search(r"\bkey\s*:\s*([^,}]+)", m.group(0))
+            c = re.search(r"\bcomponent\s*:\s*['\"](\w+)['\"]", m.group(0))
+            if k and c:
+                u.call(path, src, m, k.group(1), c.group(1))
+    return u
+
+
+def db_ids(plugin):
+    """Ids Moodle derives from db/access.php, db/messages.php and db/caches.php."""
+    out = []
+    specs = [
+        ("access.php", r"""['"]\w+/(\w+:[\w]+)['"]\s*=>""", "{}"),
+        ("messages.php", r"""^\s*['"](\w+)['"]\s*=>\s*(?:\[|array\s*\()""", "messageprovider:{}"),
+        ("caches.php", r"""^\s*['"](\w+)['"]\s*=>\s*(?:\[|array\s*\()""", "cachedef_{}"),
+    ]
+    for name, rx, fmt in specs:
+        path = os.path.join(plugin, "db", name)
+        if not os.path.isfile(path):
+            continue
+        src = strip_comments(open(path, encoding="utf-8").read(), "php")
+        if name != "access.php":
+            body = re.search(r"\$\w+\s*=\s*(?:\[|array\s*\()", src)
+            depth_start = body.end() if body else 0
+        for m in re.finditer(rx, src, re.M):
+            if name != "access.php" and not top_level(src, depth_start, m.start()):
+                continue
+            out.append((fmt.format(m.group(1)), path, src, m.start()))
+    return out
+
+
+def top_level(src, start, pos):
+    """True when pos sits directly inside the array opened just before start."""
+    depth = 0
+    for ch in src[start:pos]:
+        depth += ch in "[("
+        depth -= ch in "])"
+    return depth == 0
+
+
+def lang_ids(path):
+    """Map each $string id in a lang file to its first line."""
+    src = open(path, encoding="utf-8").read()
+    ids = {}
+    for m in re.finditer(r"""\$string\s*\[\s*(['"])([^'"]+)\1\s*\]\s*=""", src):
+        ids.setdefault(m.group(2), src.count("\n", 0, m.start()) + 1)
+    return ids
+
+
+def implicit(sid, caps):
+    base = re.sub(r"_(help|link)$", "", sid)
+    return any(s in IMPLICIT or s in caps or s.startswith(IMPLICIT_PREFIX) for s in (sid, base))
+
+
+def header_end(src, live):
+    """Offset after the file header: the comments below <?php up to the last licence or @package line."""
+    start = live.find("\n", live.find("<?php")) + 1
+    code = re.search(r"\S", live[start:])
+    lead = src[start:start + code.start()] if code else src[start:]
+    tags = list(re.finditer(r"@(?:package|copyright|license)\b|GNU General Public License|gnu\.org/licenses", lead))
+    if not tags:
+        return start
+    end = tags[-1].end()
+    if lead.rfind("/*", 0, end) > lead.rfind("*/", 0, end):
+        end = lead.find("*/", end)
+    nl = lead.find("\n", end)
+    return start + (nl + 1 if nl >= 0 else len(lead))
+
+
+def above(src, live, pos, floor):
+    """Move pos up over the comment lines above it, stopping at a commented-out string or at floor."""
+    top = pos
+    while top > floor:
+        start = src.rfind("\n", 0, top - 1) + 1
+        line = src[start:top].strip()
+        if not line or live[start:top].strip() or STMT.search(line):
+            break
+        top = start
+    return max(top, floor)
+
+
+def sync(plugin, short, langfile, xx):
+    """Insert each en statement missing from lang/<xx> before the first greater id; return the count."""
+    xxdir = os.path.join(plugin, "lang", xx)
+    os.makedirs(xxdir, exist_ok=True)
+    en = open(langfile, encoding="utf-8").read()
+    target = os.path.join(xxdir, f"{short}.php")
+    enlive = strip_comments(en, "php")
+    first = STMT.search(enlive)
+    src = open(target, encoding="utf-8").read() if os.path.isfile(target) else en[:first.start() if first else len(en)]
+    live = strip_comments(src, "php")
+    floor = header_end(src, live)
+    have = [(m.group(2), above(src, live, m.start(), floor)) for m in STMT.finditer(live)]
+    ids = {sid for sid, _ in have}
+    inserts, n = {}, 0
+    for m in sorted(STMT.finditer(enlive), key=lambda m: m.group(2)):
+        sid = m.group(2)
+        if sid in ids:
+            continue
+        ids.add(sid)
+        n += 1
+        pos = next((p for s, p in have if s > sid), None)
+        inserts.setdefault(pos, []).append(en[m.start():m.end()] + "\n")
+    tail = "".join(inserts.pop(None, []))
+    if tail and src and not src.endswith("\n"):
+        src += "\n"
+    src += tail
+    for pos in sorted(inserts, reverse=True):
+        src = src[:pos] + "".join(inserts[pos]) + src[pos:]
+    open(target, "w", encoding="utf-8").write(src)
+    return n
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    xx = None
+    if args and args[0] == "--sync":
+        if len(args) < 2 or not re.fullmatch(r"[a-z]{2,3}(?:_[a-z]+)?", args[1]) or args[1] == "en":
+            die(2, "usage: mlang --sync <xx> [plugin-dir]")
+        xx, args = args[1], args[2:]
+    if len(args) > 1:
+        die(2, "usage: mlang [--sync <xx>] [plugin-dir]")
+    plugin, comp = find_plugin(args[0] if args else os.getcwd())
+    short = comp.split("_", 1)[1] if comp.startswith("mod_") else comp
+    langfile = os.path.join(plugin, "lang", "en", f"{short}.php")
+    if not os.path.isfile(langfile):
+        die(2, f"no {os.path.relpath(langfile, plugin)}")
+    if xx:
+        print(f"synced {sync(plugin, short, langfile, xx)} ids to lang/{xx}")
+        return 0
+    defined = lang_ids(langfile)
+    u = collect(plugin, comp, short)
+    caps = set()
+    for sid, path, src, pos in db_ids(plugin):
+        u.add(sid, path, src, pos)
+        if ":" in sid and not sid.startswith("messageprovider:"):
+            caps.add(sid)
+    missing = sorted((f, line, sid) for sid, (f, line) in u.ids.items() if sid not in defined)
+    for f, line, sid in missing:
+        print(f"FAIL {f}:{line} {sid}")
+    lrel = os.path.relpath(langfile, plugin)
+    unused = [(line, sid) for sid, line in defined.items()
+              if sid not in u.ids and not implicit(sid, caps) and not sid.startswith(tuple(u.prefixes))]
+    for line, sid in sorted(unused):
+        print(f"WARN {lrel}:{line} unused {sid}")
+    parity = 0
+    langdir = os.path.join(plugin, "lang")
+    for xx in sorted(os.listdir(langdir)):
+        other = os.path.join(langdir, xx, f"{short}.php")
+        if xx == "en" or not os.path.isfile(other):
+            continue
+        orel, ids = os.path.relpath(other, plugin), lang_ids(other)
+        for line, sid in sorted((line, sid) for sid, line in defined.items() if sid not in ids):
+            print(f"WARN {lrel}:{line} missing in {xx} {sid}")
+        for line, sid in sorted((line, sid) for sid, line in ids.items() if sid not in defined):
+            print(f"WARN {orel}:{line} only in {xx} {sid}")
+        parity += len(set(defined) ^ set(ids))
+    print(f"mlang: {comp} {len(defined)} defined, {len(u.ids)} used, {u.dynamic} dynamic, "
+          f"{len(missing)} missing, {len(unused)} unused, {parity} lang parity")
+    return 1 if missing else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

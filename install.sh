@@ -6,7 +6,7 @@ set -e
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
 DEST="$HOME/.claude"
-DOCS=(CLAUDE.md moodle-guidelines.md moodle-coding-style.md moodle-tips.md moodleapp-instructions.md)
+DOCS=(CLAUDE.md moodle-guidelines.md moodle-coding-style.md moodle-tips.md moodle-quickref.md moodleapp-instructions.md)
 
 mkdir -p "$DEST/hooks" "$DEST/skills"
 cp -p  "$SRC"/hooks/*.sh        "$DEST/hooks/"

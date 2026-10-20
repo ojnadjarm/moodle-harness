@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+# Static check of a plugin's db/mobile.php (Moodle App support) on host PHP, no Moodle install needed.
+# Usage: mmobile [plugin-dir]   (default: $PWD; the component is read from version.php)
+#   Loads db/mobile.php with a stub $CFG, then checks: addon key == component; each handler's `method`/`init`
+#     is a public static method of classes/output/mobile.php (code, not comments or strings); a handler is an
+#     array (FAIL); `delegate` is set (WARN) and is '' or in reference/mobile-delegates.json (FAIL with the
+#     nearest name); handler keys outside the delegate's documented options WARN; CoreCourseModuleDelegate
+#     needs a mod_ component; `styles.url` file exists; render_from_template('<component>/x') in that class
+#     has templates/x.mustache (WARN on `{{{` in it); a handler method's template reading CONTENT_OTHERDATA.k
+#     needs k in that method's literal `otherdata` array (NOTE and skipped when the array is not a lone literal);
+#     file_get_contents($CFG->dirroot|__DIR__ . '<x>.js') in classes/output/mobile.php names an existing file
+#     (a dirroot path resolves after its first /<type-dir>/<name>/; any other is checked in the `msrc <requires>`
+#     core tree, NOTE and skipped when there is none);
+#     `lang` pairs of the component exist in lang/en. Templates drop {{! }} comments, also after a {{= =}} change.
+#   One FAIL/WARN/NOTE line per finding. No db/mobile.php: prints "no app support".
+# mmobile --refresh-delegates   rebuilds reference/mobile-delegates.json from the ~/.moodle-devdocs mirror.
+# Exit: 1 on any FAIL, 0 clean or no app support, 2 usage.
+set -uo pipefail
+
+die() { echo "mmobile: $2" >&2; exit "$1"; }
+case "${1:-}" in -h|--help) sed -n '2,/^# Exit/s/^# \{0,1\}//p' "$0"; exit 0;; --refresh-delegates) ;; -*) die 2 "unknown option $1 (see --help)";; esac
+ref="$(realpath -m "$(dirname "$(realpath "$0")")/../reference/mobile-delegates.json")"
+if [ "${1:-}" = --refresh-delegates ]; then
+    exec python3 - "$HOME/.moodle-devdocs/general/app/development/plugins-development-guide/api-reference.md" "$ref" <<'PY'
+import json, re, sys
+md = open(sys.argv[1]).read()
+handlers = md.split('\n## Handlers', 1)[1].split('\n## ', 1)[0]
+parts = re.split(r'^### (\w+Delegate)\b.*$', handlers, flags=re.M)
+keys = lambda text: re.findall(r'^\| `(\w+)`', text, re.M)
+common = keys(parts[0])
+out = {name: sorted(set(common + keys(body))) for name, body in zip(parts[1::2], parts[2::2])}
+if len(out) < 20:
+    sys.exit(f'mmobile: only {len(out)} delegates parsed from {sys.argv[1]}')
+with open(sys.argv[2], 'w') as f:
+    json.dump(out, f, indent=1, sort_keys=True)
+    f.write('\n')
+print(f'{len(out)} delegates, {len(common)} common keys -> {sys.argv[2]}')
+PY
+fi
+plugin="$(realpath -- "${1:-$PWD}")" || die 2 "no such path ${1:-}"
+while [ "$plugin" != / ] && ! grep -qs '\$plugin->component' "$plugin/version.php"; do plugin="$(dirname "$plugin")"; done
+[ "$plugin" = / ] && die 2 "no plugin version.php above ${1:-$PWD}"
+comp="$(perl -0pe 's{/\*.*?\*/}{}gs' "$plugin/version.php" | grep -oP "^[^/#]*\\\$plugin->component\s*=\s*['\"]\K[^'\"]+" | head -n1)"
+[ -n "$comp" ] || die 2 "no component in $plugin/version.php"
+[ -f "$plugin/db/mobile.php" ] || { echo "$comp: no app support (no db/mobile.php)"; exit 0; }
+command -v php >/dev/null || die 2 "host php not found"
+[ -f "$ref" ] || die 2 "no $ref (run mmobile --refresh-delegates)"
+req="$(perl -0pe 's{/\*.*?\*/}{}gs' "$plugin/version.php" | grep -oP '^[^/#]*\$plugin->requires\s*=\s*\K[0-9.]+' | head -n1)"
+core="$([ -n "$req" ] && "$(dirname "$(realpath "$0")")/msrc" "$req" 2>/dev/null)"
+
+php -n -d extension=tokenizer -d display_errors=stderr -- "$plugin" "$comp" "$ref" "$core" "$req" <<'PHP'
+<?php
+[, $plugin, $comp, $ref, $core, $req] = $argv;
+$delegates = json_decode(file_get_contents($ref), true);
+$name = substr($comp, strpos($comp, '_') + 1);
+$typedir = basename($plugin) === $name ? preg_quote(basename(dirname($plugin)), '#') : '[^/]+';
+$bad = 0;
+function fail(string $what, string $msg): void {
+    global $bad;
+    printf("FAIL %-9s %s\n", $what, $msg);
+    $bad = 1;
+}
+define('MOODLE_INTERNAL', 1);
+$CFG = new stdClass();
+$CFG->wwwroot = 'https://wwwroot.invalid';
+$CFG->dirroot = '/dirroot.invalid';
+$addons = null;
+function plugin_rel(string $path, string $name, string $typedir): ?string {
+    return preg_match('#/' . $typedir . '/' . preg_quote($name, '#') . '/(.*)$#', "/$path", $m) ? $m[1] : null;
+}
+function note(string $what, string $msg): void {
+    printf("NOTE %-9s %s\n", $what, $msg);
+}
+function template(string $file): string {
+    return preg_replace('/\{\{!.*?\}\}/s', '', file_get_contents($file));
+}
+/** Keys of each literal 'otherdata' array in the tokens; null when one is not a plain literal. */
+function otherdata_keys(array $b): ?array {
+    $keys = [];
+    foreach ($b as $i => $t) {
+        if (!is_array($t) || $t[0] !== T_CONSTANT_ENCAPSED_STRING || substr($t[1], 1, -1) !== 'otherdata') {
+            continue;
+        }
+        $j = $i + 2;
+        $j += (int)(is_array($b[$j] ?? null) && $b[$j][0] === T_ARRAY);
+        if (!is_array($b[$i + 1] ?? null) || $b[$i + 1][0] !== T_DOUBLE_ARROW || !in_array($b[$j] ?? null, ['[', '('], true)) {
+            return null;
+        }
+        for ($depth = 0; isset($b[$j]); $j++) {
+            $x = $b[$j];
+            $s = is_array($x) ? $x[1] : $x;
+            if (in_array($s, ['[', '(', '{', '${'], true)) {
+                $depth++;
+            } else if (in_array($s, [']', ')', '}'], true) && --$depth === 0) {
+                if (!in_array($b[$j + 1] ?? null, [',', ']', ')'], true)) {
+                    return null;
+                }
+                break;
+            } else if ($depth === 1 && is_array($x) && in_array($x[0], [T_DOUBLE_ARROW, T_ELLIPSIS])) {
+                $k = $b[$j - 1];
+                if ($x[0] === T_ELLIPSIS || !is_array($k) || $k[0] !== T_CONSTANT_ENCAPSED_STRING) {
+                    return null;
+                }
+                $keys[] = substr($k[1], 1, -1);
+            }
+        }
+    }
+    return $keys;
+}
+function get_string($id, $component = '', $a = null) {
+    return $id;
+}
+class lang_string {
+    public function __construct(public $id, $component = '', $a = null) {
+    }
+    public function __toString(): string {
+        return $this->id;
+    }
+}
+try {
+    (function () use ($plugin, $CFG, &$addons) {
+        include("$plugin/db/mobile.php");
+    })();
+} catch (Throwable $e) {
+    fail('load', 'db/mobile.php: ' . $e->getMessage());
+    exit(1);
+}
+if (!is_array($addons)) {
+    fail('load', 'db/mobile.php defines no $addons array');
+    exit(1);
+}
+foreach (array_keys($addons) as $key) {
+    if ($key !== $comp) {
+        fail('addon', "key '$key' != component '$comp'");
+    }
+}
+
+$class = "$plugin/classes/output/mobile.php";
+$src = $code = '';
+$toks = [];
+foreach (is_file($class) ? token_get_all(file_get_contents($class)) : [] as $t) {
+    if (!is_array($t) || !in_array($t[0], [T_COMMENT, T_DOC_COMMENT])) {
+        $src .= is_array($t) ? $t[1] : $t;
+    }
+    if (!is_array($t) || !in_array($t[0], [T_COMMENT, T_DOC_COMMENT, T_CONSTANT_ENCAPSED_STRING, T_ENCAPSED_AND_WHITESPACE])) {
+        $code .= is_array($t) ? $t[1] : $t;
+    }
+    if (!is_array($t) || !in_array($t[0], [T_COMMENT, T_DOC_COMMENT, T_WHITESPACE])) {
+        $toks[] = $t;
+    }
+}
+$bodies = [];
+foreach ($toks as $i => $t) {
+    if (!is_array($t) || $t[0] !== T_FUNCTION || !is_array($toks[$i + 1] ?? null) || $toks[$i + 1][0] !== T_STRING) {
+        continue;
+    }
+    for ($j = $i; isset($toks[$j]) && !in_array($toks[$j], ['{', ';'], true); $j++);
+    for ($depth = 0, $body = []; ($toks[$j] ?? null) === '{' || ($depth > 0 && isset($toks[$j])); $j++) {
+        $s = is_array($toks[$j]) ? $toks[$j][1] : $toks[$j];
+        $depth += in_array($s, ['{', '${'], true) ? 1 : ($s === '}' ? -1 : 0);
+        $body[] = $toks[$j];
+        if ($depth === 0) {
+            break;
+        }
+    }
+    $bodies[strtolower($toks[$i + 1][1])] = $body;
+}
+$methods = [];
+$nh = 0;
+foreach ($addons as $addon) {
+    foreach ($addon['handlers'] ?? [] as $hname => $h) {
+        $nh++;
+        if (!is_array($h)) {
+            fail('handler', "handler '$hname': not an array");
+            continue;
+        }
+        if (!array_key_exists('delegate', $h)) {
+            printf("WARN %-9s handler '%s': no delegate key (set '' if the init JavaScript registers it)\n", 'delegate', $hname);
+        }
+        $d = $h['delegate'] ?? '';
+        if ($d === '') {
+            // An empty delegate means the init JavaScript registers the handler.
+        } elseif (!isset($delegates[$d])) {
+            $near = array_keys($delegates);
+            usort($near, fn($a, $b) => levenshtein(strtolower($d), strtolower($a)) <=> levenshtein(strtolower($d), strtolower($b)));
+            fail('delegate', "handler '$hname': '$d' is not an app delegate (nearest: {$near[0]})");
+        } else {
+            foreach (array_diff(array_keys($h), $delegates[$d]) as $k) {
+                $why = $k === 'restrict' ? ' (restrict belongs in the init response)' : '';
+                printf("WARN %-9s handler '%s': '%s' is not a documented %s option%s\n", 'key', $hname, $k, $d, $why);
+            }
+        }
+        $mc = $h['moodlecomponent'] ?? $comp;
+        if ($d === 'CoreCourseModuleDelegate' && !str_starts_with($mc, 'mod_')) {
+            fail('delegate', "handler '$hname': CoreCourseModuleDelegate needs a mod_ component, got '$mc'");
+        }
+        if (!empty($h['method']) && is_string($h['method'])) {
+            $methods[$hname] = $h['method'];
+        }
+        foreach (['method', 'init'] as $opt) {
+            if (empty($h[$opt])) {
+                continue;
+            }
+            $m = preg_quote($h[$opt], '/');
+            if (!preg_match("/(public\s+static|static\s+public)\s+function\s+$m\s*\(/i", $code)) {
+                fail($opt, "handler '$hname': {$h[$opt]}() is not a public static method in classes/output/mobile.php");
+            }
+        }
+        $url = $h['styles']['url'] ?? '';
+        if ($url !== '' && (!preg_match('#^https?://#', $url) || str_starts_with($url, $CFG->wwwroot))) {
+            $path = preg_replace('#^' . preg_quote($CFG->wwwroot, '#') . '#', '', $url);
+            $path = preg_replace('#[?\#].*$#', '', $path);
+            $rel = plugin_rel($path, $name, $typedir) ?? ltrim($path, '/');
+            if (!is_file("$plugin/$rel")) {
+                fail('styles', "handler '$hname': $url -> $rel not found in plugin");
+            }
+        }
+    }
+    foreach ($addon['lang'] ?? [] as $pair) {
+        [$id, $c] = array_pad((array)$pair, 2, '');
+        if ($c !== $comp) {
+            continue;
+        }
+        $string = [];
+        $lf = "$plugin/lang/en/" . (str_starts_with($comp, 'mod_') ? $name : $comp) . '.php';
+        if (is_file($lf)) {
+            include($lf);
+        }
+        if (!array_key_exists($id, $string)) {
+            fail('lang', "'$id' not in lang/en");
+        }
+    }
+}
+preg_match_all('#render_from_template\(\s*[\'"]' . preg_quote($comp, '#') . '/([\w/]+)[\'"]#', $src, $mt);
+foreach (array_unique($mt[1]) as $t) {
+    if (!is_file("$plugin/templates/$t.mustache")) {
+        fail('template', "$comp/$t: templates/$t.mustache not found");
+    } else if (str_contains(template("$plugin/templates/$t.mustache"), '{{{')) {
+        printf("WARN %-9s %s/%s: {{{ }}} prints raw HTML in the app; use {{ }} or <core-format-text>\n", 'template', $comp, $t);
+    }
+}
+foreach ($methods as $hname => $m) {
+    $b = $bodies[strtolower($m)] ?? [];
+    if (!$b || ($keys = otherdata_keys($b)) === null) {
+        if ($b) {
+            note('otherdata', "handler '$hname': $m() 'otherdata' is not a lone literal array, keys not checked");
+        }
+        continue;
+    }
+    foreach ($b as $i => $t) {
+        $tpl = $b[$i + 2] ?? null;
+        if (!is_array($t) || $t[0] !== T_STRING || $t[1] !== 'render_from_template' || ($b[$i + 1] ?? null) !== '('
+                || !is_array($tpl) || $tpl[0] !== T_CONSTANT_ENCAPSED_STRING
+                || !str_starts_with($tn = substr($tpl[1], 1, -1), "$comp/")
+                || !is_file($f = "$plugin/templates/" . substr($tn, strlen($comp) + 1) . '.mustache')) {
+            continue;
+        }
+        preg_match_all('/CONTENT_OTHERDATA\.(\w+)/', template($f), $od);
+        foreach (array_diff(array_unique($od[1]), $keys) as $k) {
+            fail('otherdata', "handler '$hname': $tn reads CONTENT_OTHERDATA.$k, not in $m() 'otherdata'");
+        }
+    }
+}
+preg_match_all('#file_get_contents\(\s*(__DIR__|\$CFG->dirroot)\s*\.\s*[\'"]([^\'"]+\.js)[\'"]\s*\)#', $src, $js, PREG_SET_ORDER);
+foreach ($js as [, $base, $path]) {
+    $rel = $base === '__DIR__' ? "classes/output/$path" : plugin_rel($path, $name, $typedir);
+    if ($rel !== null) {
+        if (!is_file("$plugin/$rel")) {
+            fail('javascript', "$base . '$path' not found in plugin");
+        }
+    } else if ($core === '') {
+        note('javascript', "$base . '$path' is outside the plugin and no core tree (msrc " . ($req ?: '<requires>') . "), not checked");
+    } else if (!is_file($core . $path)) {
+        fail('javascript', "$base . '$path' not found in core $core");
+    }
+}
+if (!$bad) {
+    printf("PASS %s: %d handlers, %d templates checked\n", $comp, $nh, count(array_unique($mt[1])));
+}
+exit($bad);
+PHP

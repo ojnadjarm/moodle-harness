@@ -1,6 +1,6 @@
 ---
 name: moodle-upgrade-audit
-description: Audit a Moodle site's add-on plugins for an upgrade - read every non-core plugin from the site's app container, check each against the moodle.org plugins directory API (pluglist.php) for a target release (default 5.3), and write a keep / replace / remove table as Markdown and responsive HTML. Use for "plugin audit", "upgrade audit", "which plugins support 5.3", "keep replace remove", step 1 of the upgrade offer.
+description: Audit a Moodle site's add-on plugins for an upgrade. Use for "plugin audit", "upgrade audit", "which plugins support 5.3", "keep replace remove", step 1 of the upgrade offer. Checks each non-core plugin on moodle.org pluglist.php for a target (default 5.3); keep/replace/remove table.
 ---
 
 # moodle-upgrade-audit — plugin list to keep / replace / remove

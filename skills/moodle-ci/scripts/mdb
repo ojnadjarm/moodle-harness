@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# SQL on the DB of the Moodle env whose code tree holds the cwd (or of --env <name>); TSV with a header row.
+set -uo pipefail
+
+usage() {
+    cat <<'EOF'
+usage: mdb [--env <name>] [--write] [--json] "<sql>" [param...]   (default: the code tree holding the cwd)
+  {table} expands to $CFG->prefix.table; each ? takes the next param (numbers bare, else quoted);
+  both are left alone inside string literals, quoted identifiers and comments.
+  Reads dbtype/dbhost/dbname/dbuser/dbpass/prefix from config.php; the DB container is the
+  compose service named dbhost in the project of the app container that mounts the cwd.
+  --write  allow INSERT/UPDATE/DELETE/DDL and client meta-commands (default: one read-only
+           transaction; a write statement or a backslash outside literals is refused)
+  --json   print a JSON array of row objects instead of TSV (one statement only)
+  --env    use ~/moodle-envs/<name>/www[/public]/config.php from any cwd ($MFIXTURE_ENVS honoured);
+           vass*, 4.5* and unknown names are refused, also when the env dir, www, www/public
+           or config.php resolves (symlinks) into one
+Exit: the client's rc; 64 for mdb's own refusals (usage, write without --write, no container).
+EOF
+}
+
+write=0 json=0 env=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --write) write=1; shift ;;
+        --json) json=1; shift ;;
+        --env) [ -n "${2:-}" ] || { usage >&2; exit 64; }; env="$2"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; break ;;
+        *) break ;;
+    esac
+done
+[ $# -ge 1 ] || { usage >&2; exit 64; }
+die() { echo "mdb: $*" >&2; exit 64; }
+
+start="$PWD"
+if [ -n "$env" ]; then
+    envs="${MFIXTURE_ENVS:-$HOME/moodle-envs}"
+    case "$env" in vass*|4.5*) die "env '$env' is refused (Vass and 4.5 are never touched)" ;;
+        .*|*/*) die "env '$env' is not a name under $envs" ;; esac
+    [ -d "$envs/$env" ] || die "unknown env '$env' (no $envs/$env)"
+    refused() { local r; r="$(realpath -m "$1")"
+        case "$r/" in */vass*|*/4.5*) die "env '$env' resolves to a refused env ($r)" ;; esac; }
+    refused "$envs/$env"
+    start=""
+    for d in "$envs/$env/www" "$envs/$env/www/public"; do
+        [ -f "$d/config.php" ] && grep -q '^\$CFG->dbtype' "$d/config.php" && { start="$d"; break; }
+    done
+    [ -n "$start" ] || die "unknown env '$env' (no config.php with \$CFG->dbtype in $envs/$env/www[/public])"
+    for p in "$envs/$env/www" "$start" "$start/config.php"; do refused "$p"; done
+fi
+cfg="" d="$start"
+while :; do
+    [ -f "$d/config.php" ] && grep -q '^\$CFG->dbtype' "$d/config.php" && { cfg="$d/config.php"; break; }
+    [ "$d" = / ] && break
+    d="$(dirname "$d")"
+done
+[ -n "$cfg" ] || die "no config.php with \$CFG->dbtype above $PWD (not inside a Moodle code tree; or pass --env <name>)"
+cfgval() { sed -nE "s/^\\\$CFG->$1[[:space:]]*=[[:space:]]*['\"]([^'\"]*)['\"].*/\\1/p" "$cfg" | head -1; }
+dbtype="$(cfgval dbtype)" dbhost="$(cfgval dbhost)" dbname="$(cfgval dbname)"
+dbuser="$(cfgval dbuser)" dbpass="$(cfgval dbpass)" prefix="$(cfgval prefix)"
+case "$dbtype" in pgsql|mysqli|mariadb|auroramysql) ;; *) die "dbtype '$dbtype' is not supported (pgsql, mysqli, mariadb)" ;; esac
+
+# Expands {table} and ? outside literals/comments, splits statements, applies the write guard.
+sql="$(python3 -c '
+import re, sys
+dbtype, prefix, write, js, sql, *params = sys.argv[1:]
+my = dbtype != "pgsql"
+def die(m):
+    sys.stderr.write("mdb: %s\n" % m); sys.exit(64)
+def lit(p):
+    if re.fullmatch(r"-?[0-9]+(\.[0-9]+)?", p): return p
+    if my: p = p.replace("\\", "\\\\")
+    return "\x27" + p.replace("\x27", "\x27\x27") + "\x27"
+word = lambda k: k >= 0 and (sql[k].isalnum() or sql[k] == "_")
+out, code, stmts, i, n = [], [], [], 0, len(sql)
+while i < n:
+    c = sql[i]
+    if c in "\x27\"`":
+        bs = c != "`" and (my or (c == "\x27" and i > 0 and sql[i - 1] in "eE" and not word(i - 2)))
+        j = i + 1
+        while j < n:
+            if bs and sql[j] == "\\" or sql[j:j + 2] == c * 2: j += 2
+            elif sql[j] == c: break
+            else: j += 1
+        j += 1
+        out.append(sql[i:j]); code.append(" x "); i = j; continue
+    if (sql.startswith("--", i) and (not my or i + 2 >= n or sql[i + 2].isspace())) or (my and c == "#"):
+        j = sql.find("\n", i); j = n if j < 0 else j
+        out.append(sql[i:j]); code.append(" "); i = j; continue
+    if my and sql.startswith("/*!", i):
+        j = re.compile(r"/\*!\d*").match(sql, i).end()
+        out.append(sql[i:j]); code.append(" "); i = j; continue
+    if sql.startswith("/*", i):
+        j = sql.find("*/", i + 2); j = n if j < 0 else j + 2
+        out.append(sql[i:j]); code.append(" "); i = j; continue
+    m = not my and c == "$" and not word(i - 1) and re.compile(r"\$([A-Za-z_]\w*)?\$").match(sql, i)
+    if m:
+        j = sql.find(m.group(0), m.end()); j = n if j < 0 else j + len(m.group(0))
+        out.append(sql[i:j]); code.append(" x "); i = j; continue
+    m = re.compile(r"\{(\w+)\}").match(sql, i)
+    if m:
+        out.append(prefix + m.group(1)); code.append(prefix + m.group(1)); i = m.end(); continue
+    if c == "?":
+        if not params: die("fewer params than ? placeholders")
+        out.append(lit(params.pop(0))); code.append(" x "); i += 1; continue
+    if c == ";":
+        stmts.append("".join(code)); code = []; out.append(c); i += 1; continue
+    if c == "\\" and write == "0":
+        die("client meta-command (backslash outside a literal); pass --write")
+    out.append(c); code.append(c); i += 1
+stmts.append("".join(code))
+if params: die("more params than ? placeholders")
+kws = []
+for s in stmts:
+    t = re.sub(r"[\s(]+", " ", s).strip()
+    if t: kws.append(re.match(r"\w*", t).group(0).lower() or t.split()[0])
+if write == "0":
+    for k in kws:
+        if k not in ("select", "with", "show", "explain", "values", "table", "describe", "desc"):
+            die("\x27%s\x27 writes; pass --write" % k)
+if js == "1" and len(kws) > 1: die("--json takes one statement")
+sys.stdout.write("".join(out))
+' "$dbtype" "$prefix" "$write" "$json" "$@")" || exit 64
+
+IFS=$'\t' read -r app _ < <("$HOME/.claude/hooks/moodle-container.sh" "$start") \
+    || die "no running Moodle container mounts $start (its env is stopped?)"
+proj="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$app" 2>/dev/null)"
+db="$(docker ps --filter "label=com.docker.compose.project=$proj" \
+    --filter "label=com.docker.compose.service=$dbhost" --format '{{.Names}}' 2>/dev/null | head -1)"
+[ -n "$proj" ] && [ -n "$db" ] || die "no running DB service '$dbhost' in compose project '${proj:-?}' of $app"
+
+case "$dbtype" in
+    pgsql)
+        ro=() tx=() fmt=(-A -F $'\t' -P footer=off -P null=NULL)
+        [ "$write" = 0 ] && ro=(-e PGOPTIONS='-c default_transaction_read_only=on') tx=(--single-transaction)
+        [ "$json" = 1 ] && fmt=(-P format=csv -P null=$'\x1d')
+        cmd=(docker exec -i -e PGPASSWORD="$dbpass" "${ro[@]}" "$db"
+            psql -X -q -v ON_ERROR_STOP=1 "${tx[@]}" "${fmt[@]}" -U "$dbuser" -d "$dbname")
+        ;;
+    *)
+        [ "$write" = 0 ] && sql="SET SESSION TRANSACTION READ ONLY; $sql"
+        client=mysql; [ "$dbtype" = mariadb ] && client=mariadb
+        cmd=(docker exec -i -e MYSQL_PWD="$dbpass" "$db" "$client" --batch -u "$dbuser" "$dbname")
+        [ "$json" = 1 ] && cmd+=(--xml)
+        ;;
+esac
+
+if [ "$json" = 0 ]; then
+    printf '%s\n' "$sql" | "${cmd[@]}"
+    exit $?
+fi
+printf '%s\n' "$sql" | "${cmd[@]}" | python3 -c '
+import csv, io, json, sys
+import xml.etree.ElementTree as ET
+data = sys.stdin.buffer.read()
+if sys.argv[1] == "pgsql":
+    rows = list(csv.reader(io.StringIO(data.decode(), newline="")))
+    keys = rows[0] if rows else []
+    out = [{k: (None if v == "\x1d" else v) for k, v in zip(keys, r)} for r in rows[1:]]
+else:
+    nil = "{http://www.w3.org/2001/XMLSchema-instance}nil"
+    root = ET.fromstring(data) if data.strip() else ET.Element("resultset")
+    out = [{f.get("name"): (None if f.get(nil) == "true" else f.text or "") for f in r} for r in root.iter("row")]
+print(json.dumps(out))' "$dbtype"
+rc=("${PIPESTATUS[@]}")
+[ "${rc[1]}" != 0 ] && exit "${rc[1]}"
+exit "${rc[2]}"

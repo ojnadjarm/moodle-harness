@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Bump, resolve or check a plugin's $plugin->version (YYYYMMDDXX).
+Usage: mversion bump|resolve|check [plugin-dir]   (default: $PWD; walks up to version.php)
+  bump     today's YYYYMMDD00, or current+1 when that is not higher (XX 99 -> next day 00).
+  resolve  a merge conflict whose sides differ only in $plugin->version becomes one line
+           with max(both)+1; other conflicts stay, each named (CONFLICT version.php:line), rc 1.
+  check    FAIL when the version is not 10 digits, is lower than the highest
+           upgrade_*_savepoint in db/upgrade.php, or the savepoints are not ascending.
+Env: MVERSION_TODAY=YYYYMMDD overrides today (tests).
+Exit: 0 ok, 1 FAIL or conflicts left, 2 usage / no version.php / no version line.
+"""
+import datetime
+import os
+import re
+import sys
+
+VERSION = re.compile(r"(\$plugin->version\s*=\s*)(\d+(?:\.\d+)?)")
+SAVEPOINT = re.compile(r"upgrade_\w+_savepoint\s*\(\s*\$?\w+\s*,\s*['\"]?(\d+(?:\.\d+)?)")
+CONFLICT = re.compile(r"^<<<<<<< [^\n]*\n(.*?)^(?:\|\|\|\|\|\|\| [^\n]*\n.*?)?^=======\r?\n(.*?)^>>>>>>> [^\n]*\n?",
+                      re.S | re.M)
+
+
+def die(rc, msg):
+    print(f"mversion: {msg}", file=sys.stderr)
+    sys.exit(rc)
+
+
+def find_version_php(start):
+    p = os.path.realpath(start)
+    while p != "/":
+        v = os.path.join(p, "version.php")
+        if os.path.isfile(v):
+            return v
+        p = os.path.dirname(p)
+    die(2, f"no version.php above {start}")
+
+
+def today():
+    t = os.environ.get("MVERSION_TODAY") or datetime.date.today().strftime("%Y%m%d")
+    try:
+        return datetime.datetime.strptime(t, "%Y%m%d").date()
+    except ValueError:
+        die(2, f"MVERSION_TODAY {t} is not YYYYMMDD")
+
+
+def increment(cur):
+    """cur+1, rolling XX 99 over to the next day's 00."""
+    day, xx = divmod(int(cur), 100)
+    try:
+        nxt = datetime.datetime.strptime(str(day), "%Y%m%d").date() + datetime.timedelta(days=1)
+    except ValueError:
+        die(2, f"{int(cur)} is not YYYYMMDDXX")
+    if xx < 99:
+        return int(cur) + 1
+    return int(nxt.strftime("%Y%m%d00"))
+
+
+def bump(path, src):
+    if "<<<<<<< " in src:
+        die(1, f"{path} has conflict markers; run mversion resolve")
+    m = VERSION.search(src)
+    if not m:
+        die(2, f"no $plugin->version in {path}")
+    cur = m.group(2)
+    new = max(int(today().strftime("%Y%m%d00")), increment(float(cur)))
+    open(path, "w", encoding="utf-8", newline="").write(src[:m.start(2)] + str(new) + src[m.end(2):])
+    print(f"version {cur} -> {new}")
+    return 0
+
+
+def resolve(path, src):
+    out, left, pos = [], [], 0
+    for m in CONFLICT.finditer(src):
+        out.append(src[pos:m.start()])
+        ours, theirs = m.group(1), m.group(2)
+        a, b = VERSION.search(ours), VERSION.search(theirs)
+        if a and b and VERSION.sub(r"\1", ours) == VERSION.sub(r"\1", theirs):
+            new = increment(max(float(a.group(2)), float(b.group(2))))
+            out.append(ours[:a.start(2)] + str(new) + ours[a.end(2):])
+            print(f"version {a.group(2)} / {b.group(2)} -> {new}")
+        else:
+            left.append("".join(out).count("\n") + 1)
+            out.append(m.group(0))
+        pos = m.end()
+    out.append(src[pos:])
+    open(path, "w", encoding="utf-8", newline="").write("".join(out))
+    if not left and len(out) == 1:
+        print("no conflict")
+    for line in left:
+        print(f"CONFLICT {os.path.basename(path)}:{line} (not a version-only conflict)")
+    return 1 if left else 0
+
+
+def check(path, src):
+    m = VERSION.search(src)
+    if not m:
+        die(2, f"no $plugin->version in {path}")
+    ver, fails = m.group(2), []
+    if not re.fullmatch(r"\d{10}(\.\d+)?", ver):
+        fails.append(f"version {ver} is not 10 digits (YYYYMMDDXX)")
+    up = os.path.join(os.path.dirname(path), "db", "upgrade.php")
+    points = []
+    if os.path.isfile(up):
+        usrc = open(up, encoding="utf-8").read()
+        points = [(usrc.count("\n", 0, s.start()) + 1, float(s.group(1)), s.group(1)) for s in SAVEPOINT.finditer(usrc)]
+    for (_, prev, ps), (line, cur, cs) in zip(points, points[1:]):
+        if cur <= prev:
+            fails.append(f"db/upgrade.php:{line} savepoint {cs} not above {ps}")
+    if points:
+        top = max(points, key=lambda p: p[1])
+        if float(ver) < top[1]:
+            fails.append(f"version {ver} < savepoint {top[2]} (db/upgrade.php:{top[0]})")
+    for f in fails:
+        print(f"FAIL {f}")
+    if not fails:
+        print(f"OK version {ver}, {len(points)} savepoints")
+    return 1 if fails else 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help") or argv[0] not in ("bump", "resolve", "check") or len(argv) > 2:
+        print(__doc__.strip())
+        sys.exit(0 if argv and argv[0] in ("-h", "--help") else 2)
+    path = find_version_php(argv[1] if len(argv) > 1 else os.getcwd())
+    src = open(path, encoding="utf-8", newline="").read()
+    return {"bump": bump, "resolve": resolve, "check": check}[argv[0]](path, src)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

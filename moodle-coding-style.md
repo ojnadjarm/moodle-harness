@@ -1,14 +1,24 @@
 # Moodle Coding Style Guide (local reference)
 
 Source: https://moodledev.io/general/development/policies/codingstyle
-Saved so it doesn't need re-fetching each time. Refresh periodically if upstream changes.
+Mirror: ~/.moodle-devdocs/general/development/policies/codingstyle/index.md (upstream 2026-10-15, condensed 2026-10-20).
+Headings mirror upstream; `~/.claude/skills/moodle-guidelines/tests/style-coverage.test.sh` lists any upstream section missing here.
+
+## Overview
+
+Defers to PSR-12, then PSR-1, where this guide is silent.
+
+### Useful tools
+Check code with both the Code checker (`local_codechecker`, phpcs) and the PHPdoc checker (`local_moodlecheck`);
+they check different things.
 
 ---
 
 ## File Formatting
 
 ### PHP Tags
-Long PHP tags only. No closing `?>` at end of files (avoids whitespace problems).
+Long PHP tags only. No closing `?>` at end of files (avoids whitespace problems). SQL has its own
+indentation rules (SQL coding style).
 
 ```php
 <?php
@@ -17,19 +27,42 @@ require('config.php');
 
 ### Maximum Line Length
 Aim for 132 chars when convenient; do not exceed ~180. Exception: `/lang` files keep
-string values as single unbroken lines.
+string values as single unbroken quoted strings (no concatenation, heredoc or nowdoc).
 
-When wrapping: indent 4 spaces by default; wrapped lines in control structures or
-declarations get 4 additional spaces.
+#### Wrapping lines
+Indent wrapped lines 4 spaces by default; wrapped control-statement conditions and function/class
+declarations get 4 additional spaces (8) so they stand apart from the body.
+
+#### Wrapping control structures
+```php
+while ($fileinfolevel && $params['component'] === 'user'
+        && $params['filearea'] === 'private') {
+    $fileinfolevel = $fileinfolevel->get_parent();
+}
+```
+
+#### Wrapping if-statement conditions
+Same rule as control structures. With several conditions, prefer named helper variables over a long
+wrapped condition.
+
+```php
+$iscourseorcategoryitem = ($element['object']->is_course_item() || $element['object']->is_category_item());
+$usesscaleorvalue = in_array($element['object']->gradetype, [GRADE_TYPE_SCALE, GRADE_TYPE_VALUE]);
+if ($iscourseorcategoryitem && $usesscaleorvalue) {
+    // Readable condition.
+}
+```
 
 ### Line Termination
-- Unix LF only (0x0A). No CR (0x0D).
+- Unix LF only (0x0A). No CR (0x0D), alone or with LF.
 - No trailing whitespace.
-- Single LF at end of file.
+- No extra blank lines at end of file; end with a single LF.
 
 ### Whitespace
-- No trailing whitespace anywhere (incl. SQL).
-- One or more spaces allowed before `=`; one space only after.
+No trailing whitespace anywhere, including inside multiline string literals such as SQL.
+
+#### Assignment operator
+One or more spaces allowed before `=`; exactly one after. Follow surrounding/similar code.
 
 ```php
 $foo    = true;
@@ -42,7 +75,7 @@ $bafoo  = 'Hello world';
 ## Naming Conventions
 
 ### Filenames
-Whole English words, lowercase only. Extensions: `.php`, `.html`, `.js`, `.css`, `.xml`.
+Whole English words, as short as possible, lowercase only. Extensions: `.php`, `.html`, `.js`, `.css`, `.xml`.
 
 ### Classes
 Lowercase English words separated by underscores. Always use `()` when instantiating.
@@ -56,7 +89,7 @@ class some_custom_class {
 $instance = new some_custom_class();
 ```
 
-Plain objects use `stdClass`:
+Plain objects use `stdClass` (never the deprecated `object` class):
 
 ```php
 $row = new stdClass();
@@ -71,19 +104,18 @@ $row = (object) [
 ```
 
 ### Functions and Methods
-Lowercase English words separated by underscores. Legacy functions need Frankenstyle
-prefix. Type hints and return types required for new code.
+Lowercase English words separated by underscores; verbose, illustrative names are encouraged. Legacy
+(non-class) functions need the Frankenstyle prefix (activity modules: module name only, e.g.
+`forum_set_display_mode()`). Type hints and return types required in all possible places for new code.
+No space between name and `(`, between `?` and the type, or between `)` and `:`.
 
 ```php
-function report_participation_get_overviews(
-    string $action,
-    ?int $userid
-): ?array {
-    // Function code
+function report_participation_get_overviews(string $action, ?int $userid): ?array {
+    // Function code.
 }
 ```
 
-Override parent methods with the `#[\Override]` attribute:
+Override parent methods with the `#[\Override]` attribute (phpcs then skips doc/naming sniffs on it):
 
 ```php
 class example extends \Some\Vendor\ExampleClass {
@@ -94,8 +126,10 @@ class example extends \Some\Vendor\ExampleClass {
 }
 ```
 
-Parameters: lowercase, sensible defaults, prefer `null` over `false`. Nullable hints
-for optional typed params.
+#### Function Parameters
+Simple lowercase English words (`$initialvalue`), sensible defaults. Default `null` rather than `false`
+when no value is needed; `true`/`false` fine for genuine boolean options. Use nullable hints on optional
+typed params.
 
 ```php
 public function foo($required, $optional = null);
@@ -103,7 +137,8 @@ public function get(?string $default = null): string;
 ```
 
 ### Web Service Functions
-`{fullcomponent}_{methodname}` where method is `{verb}_{noun}`:
+`{fullcomponent}_{methodname}` where method is `{verb}_{noun}` (verb preferably `get`, `create`,
+`delete`, `update`):
 
 ```
 core_block_get_dashboard_blocks
@@ -112,170 +147,210 @@ core_cohort_delete_cohort_members
 ```
 
 ### Variables
-Meaningful lowercase English words. Plural for object arrays. Positive names
+Meaningful, short, lowercase English words run together. Plural for object arrays. Positive names
 (`allow`/`enable`, not `prevent`/`disable`).
 
 ```php
 $quiz = null;
 $errorstring = null;
-$assignments = null; // Array of objects
-$i = null;           // Only in small loops
+$assignments = null; // Array of objects.
+$i = null;           // Only in small loops.
 $allowfilelocking = false;
 ```
 
 Invalid:
 ```php
-$Quiz = null;            // not all lowercase
-$camelCase = null;       // no camelCase
-$error_string = null;    // no underscores in variables
-$preventfilelocking = true; // avoid negative
+$Quiz = null;            // Not all lowercase.
+$camelCase = null;       // No camelCase/PascalCase.
+$error_string = null;    // No underscores in variables.
+$preventfilelocking = true; // Avoid negatives.
 ```
 
 Core globals (uppercase, create no new ones): `$CFG`, `$SESSION`, `$USER`, `$COURSE`,
 `$SITE`, `$PAGE`, `$PERF`, `$DB`, `$THEME`.
 
 ### Constants
-Uppercase, Frankenstyle prefix, underscore separated.
+Uppercase, Frankenstyle prefix (activities: module name only), underscore separated.
 
 ```php
 define('BLOCK_COURSE_OVERVIEW_SHOWCATEGORIES_NONE', '0');
 define('FORUM_MODE_FLATOLDEST', 1);
 ```
 
-### Booleans / Null
+### Booleans and the null value
 Lowercase: `true`, `false`, `null`.
 
 ### Namespaces
-Required for all new classes. Live in `classes/` dir, autoloadable. One namespace per file.
+Required for all new classes (no need to move old ones; Frankenstyle class-name prefix only where a
+loader cannot handle namespaces). Classes live in `classes/` (`mod/forum/classes`, `lib/classes`,
+`<subsystem>/classes`), follow autoloading rules. At most one namespace per file.
 
 ```php
 <?php
+
 namespace mod_porridge\local\equipment;
 
 class spoon {
-    // Code here
+    // Code here.
 }
 ```
 
-Structure: `namespace xxxx\yyyy;` where `xxxx` = component, `yyyy` = API.
-
-`use` statements: after namespace + 1 blank line; one class each; alphabetically sorted;
-no whole-namespace imports; avoid aliases unless resolving conflicts; 1 blank line after.
+#### Further notes
+- Namespace line is the first non-comment line (a docblock may precede it), then 1 blank line, then `use`
+  lines, one class each, alphabetically sorted, 1 blank line after the last.
+- Class naming rules apply to every namespace level. Use maximum detail: `namespace xxxx\yyyy;`
+  (component, API).
+- Never import a whole namespace; no aliases (`use X as Y`) unless resolving a conflict.
+- Never `__NAMESPACE__`, `namespace\Foo`, or bracketed `namespace { }` blocks.
+- Namespaces only for classes in a subfolder of `classes/`.
+- No leading `\` in `namespace`/`use` lines or on global functions; other-scope classes take a leading
+  `\` or a `use`.
 
 ```php
 <?php
-use mod_porridge\local\equipment\bowl;
-use mod_porridge\local\equipment\spoon;
+namespace mod_breakfast\local;
+
+use moodle_url;
+
+echo get_string('goodmorning', 'mod_breakfast');
+$url = new moodle_url('/mod/breakfast/view.php');
+$tasks = \core\task\manager::get_all_scheduled_tasks();
+$a = new \stdClass();
 ```
 
-Levels: **L1** (mandatory) full component (`\mod_forum`) or `\core`. **L2** short core
-API name or `\local`. **L3** plugin-specific, no restrictions.
+#### Parts of a namespace
+`\<level1>\<level2>\<level3>\...\<classname>`; only level1 is mandatory.
 
-Tests: namespace matches code under test. Test classes named after code class with
-`_test.php` suffix; first-level namespace matches component.
+#### Rules for level1
+Full component name (`\mod_forum`; all a plugin's namespaced classes sit under it) or `\core` for core APIs.
+
+#### Rules for level2
+Short name of a core API the class implements or uses (`\mod_forum\external`), or `\local` for other
+classes the maintainer wants to organise.
+
+#### Rules for level3
+No restrictions.
+
+#### Namespaces within `**/tests` directories
+Namespace strongly recommended and matching the code under test; test class named after the class
+under test with `_test.php` suffix; level1 must be the component; sub-directories mirror the namespace
+under `tests/`. Tests are not autoloaded.
 
 ```php
-// Code: mod/breakfast/classes/local/utils/
-// Test: mod/breakfast/tests/local/utils/
+// Code: mod/breakfast/classes/local/utils/  Test: mod/breakfast/tests/local/utils/
 namespace mod_breakfast\local\utils;
+// Invalid: namespace mod_forum\test; (no "test" API under test)
 ```
 
 ---
 
 ## Strings
 
-Single quotes for literals or strings with many double quotes:
+Readability is the criterion.
+
+### Single quotes
+For literals or strings with many double quotes (HTML):
 
 ```php
 $a = 'Example string';
 echo '<span class="'.s($class).'"></span>';
-$html = '<a href="http://something" title="something">Link</a>';
 ```
 
-Double quotes for variables or strings with many single quotes:
+### Double quotes
+For plain variables or many single quotes; complex SQL always in double quotes:
 
 ```php
 echo "<span>$string</span>";
-$statement = "You aren't serious!";
-```
-
-Complex SQL in double quotes:
-
-```php
 $sql = "SELECT e.*, ue.userid
-        FROM {user_enrolments} ue
-        JOIN {enrol} e ON (e.id = ue.enrolid AND e.enrol = 'self')
-        JOIN {user} u ON u.id = ue.userid
-        WHERE :now - u.lastaccess > e.customint2";
+          FROM {user_enrolments} ue
+          JOIN {user} u ON u.id = ue.userid
+         WHERE :now - u.lastaccess > e.customint2";
 ```
 
-Variable substitution — both acceptable:
+### Variable substitution
+Both acceptable:
 
 ```php
 $greeting = "Hello $name, welcome back!";
 $greeting = "Hello {$name}, welcome back!";
 ```
 
-Concatenation with `.`; dot at line end when wrapping:
+### String concatenation
+Use `.`; spaces around it optional. When wrapping, dot at the line end:
 
 ```php
-$longstring = $several . $short . 'strings';
 $string = 'This is very long ' . $editorname .
     " couldn't think of better example.";
 ```
 
-Language strings: capitals only at sentence start/proper names; must stand alone (no
-concatenation); no leading/trailing whitespace.
+### Language strings
+
+#### Capitals
+Only at sentence start or proper names (`Always look like this`, not `Never Like This`).
+
+#### Structure
+Each string stands alone; never designed for concatenation into sentences.
 
 ```php
 $string['overduehandling'] = 'Time expiry behaviour';
-$string['overduehandlingautosubmit'] = 'Unfinished attempts will be autosubmitted';
+$string['overduehandlingautosubmit'] = 'Unfinished attempts will be autosubmitted immediately';
 ```
+
+#### Whitespace
+No leading or trailing whitespace in strings, and never rely on it (breaks AMOS translation).
 
 ---
 
 ## Objects
 
+### Importing `stdClass`
+In namespaced code, `use stdClass;` or `\stdClass` are both fine.
+
 ```php
 use stdClass;
 $foo = new stdClass();
-// or
-$foo = new \stdClass();
+```
 
-// Dynamic properties
+### Dynamic properties
+Cast an associative array or assign onto a new `stdClass`:
+
+```php
 $foo = (object) ['bar' => 1, 'baz' => 2];
-$foo = new stdClass();
-$foo->bar = 1;
+```
 
-// Empty
-$foo = (object) [];
-$foo = new stdClass();
+### Empty objects
+`(object) []` or `new stdClass()`, also inside arrays/objects and as return values:
+
+```php
+$boo = ['far' => (object) []];
+return new stdClass();
 ```
 
 ---
 
 ## Arrays
 
-Short syntax for all new code (long syntax only to match surrounding code).
+### Array syntax
+Short syntax for all new code; long `array()` only to match surrounding code (also in casts).
 
 ```php
-$myarray = [];
 $myarray = ['some', 'value'];
-$myarray = ['some' => 'value'];
 $myobject = (object) ['some' => 'value'];
 ```
 
-Numerically indexed — trailing space after commas, trailing comma recommended:
+### Numerically indexed arrays
+Space after each comma; continuation lines indented 4; brackets and newlines balanced; trailing comma
+recommended on multi-line:
 
 ```php
-$myarray = [1, 2, 3, 'Stuff', 'Here'];
 $myarray = [
     1, 2, 3, 'Stuff', 'Here',
     $a, $b, $c, 56.44, $d, 500,
 ];
 ```
 
-Associative — multiple lines:
+### Associative arrays
+Multiple lines when it helps readability:
 
 ```php
 $myarray = [
@@ -288,10 +363,12 @@ $myarray = [
 
 ## Classes
 
-- One class per file (documented exceptions), in `component/classes/`.
-- Complete PHPDoc. 4-space indentation.
-- Member variables declared at top, above methods. Never `var`. Always declare
-  visibility (`private`/`protected`/`public`). Document each property explicitly.
+### Class declarations
+- Moodle naming; in `component/classes/` (autoloading, namespaces).
+- One class/interface/trait per file (old multi-artifact APIs excepted).
+- Complete PHPDoc block; 4-space indentation.
+- No side-effects in class files except requiring non-autoloaded code, which then needs the
+  `MOODLE_INTERNAL` check.
 
 ```php
 /**
@@ -301,21 +378,28 @@ $myarray = [
  * @copyright  2008 Kim Bloggs
  * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+class sample_class {
+}
+```
+
+### Class member variables
+Variable naming rules; declared at top, above methods. Never `var`; always `private`/`protected`/`public`.
+Public properties allowed but discouraged in favour of get/set methods.
+
+```php
 class zebra {
     /** @var int The number of white stripes */
     protected $whitestripes = 0;
-
-    /** @var int The number of black stripes */
-    protected $blackstripes = 0;
 }
 ```
 
 ---
 
-## Functions and Methods
+## Functions and methods
 
-Opening brace on same line. No space between name and `()`. Return values not in
-parentheses. Methods declare visibility. Type hints + return types for new code.
+### Function and method declaration
+Moodle function naming. Methods always declare visibility. Opening brace on the same line, no space
+before `(`, return value not in parentheses, one return type (multiple discouraged).
 
 ```php
 public function sample_function() {
@@ -323,14 +407,19 @@ public function sample_function() {
 }
 ```
 
-Calls — single trailing space after commas:
+### Function and method usage
+Single space after each comma:
 
 ```php
 three_arguments(1, 2, 3);
 ```
 
-Magic methods heavily discouraged. List all arguments explicitly with types rather than
-generic `array $options` (or use a dedicated options class):
+### Magic methods
+Heavily discouraged; justification required (laziness is not one).
+
+### Using arrays for options as arguments
+List every argument explicitly with a type and default instead of a generic `array $options` (or use a
+dedicated options class); a generic array needs a stated reason.
 
 ```php
 function good_function(
@@ -343,9 +432,13 @@ function good_function(
 
 ---
 
-## Control Statements
+## Control statements
 
-If/else — spaces around, 4-space indent, `else if` (not `elseif`), always braces:
+Use whitespace between lines liberally.
+
+### If / else
+Space before/after the bracketed condition, operators spaced, 4-space indent, `else if` (never
+`elseif`), always braces, opening brace on the same line:
 
 ```php
 if ($x == $y) {
@@ -357,37 +450,37 @@ if ($x == $y) {
 }
 ```
 
-Switch — cases indented 4, content 4 more:
+### Switch
+Cases indented 4, case content 4 more:
 
 ```php
 switch ($something) {
     case 1:
-        break;
-    case 2:
         break;
     default:
         break;
 }
 ```
 
-Foreach:
-
+### Foreach
 ```php
 foreach ($objects as $key => $thing) {
     process($thing);
 }
 ```
 
-Ternary — only short/simple, spaces around operators, prefer `??`:
+### Ternary Operator
+Only for short statements understandable in one sentence, spaces around `?` and `:`; prefer `??` for
+`isset()` ternaries:
 
 ```php
-$username = isset($user->username) ? $user->username : '';
+$users = is_array($users) ? $users : [$users];
 $username = $user->username ?? '';
 ```
 
 ---
 
-## Require / Include
+## Require / include
 
 Browser-accessed files start with:
 
@@ -395,15 +488,16 @@ Browser-accessed files start with:
 require(__DIR__ . '/../../config.php');
 ```
 
-Use `__DIR__` or absolute paths from `$CFG->dirroot`/`$CFG->libdir`. Avoid `../` relative
-includes. Library files use `require_once`:
+Other includes use `__DIR__` or `$CFG->dirroot`/`$CFG->libdir`; never `../`-relative paths (CLI scripts
+included). Library files use `require_once`; include only at file top or inside the function needing it:
 
 ```php
 require_once(__DIR__ . '/locallib.php');
 require_once($CFG->libdir . '/filelib.php');
 ```
 
-Single-artifact files / non-imported third-party libs add at top:
+Files with side-effects (global code other than `namespace`, `use`, namespace constants, `declare`),
+except imported third-party libs, start with:
 
 ```php
 defined('MOODLE_INTERNAL') || die();
@@ -411,24 +505,88 @@ defined('MOODLE_INTERNAL') || die();
 
 ---
 
-## Documentation and Comments (PHPDoc)
+## Documentation and comments
 
-Types: short names (`bool` not `boolean`); arrays as `type[]`; multiple via pipe
-(`int|false`); primitives/keywords lowercase.
+### PHPDoc
+Standard phpDocumentor format for files, classes, functions, with the Moodle rules below.
 
-Key tags:
-- `@package` (required) — Frankenstyle component (`mod_quiz`, `core_enrol`, `core`).
-- `@copyright` (required) — `2008 Kim Bloggs`. Don't change existing.
-- `@license` (required) — `https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later`.
-- `@param [[type]] $name Description.` — space after name, no hyphens.
-- `@return [[type]] Description.` — mandatory if function returns.
-- `@var [[type]] Description.` — properties/constants.
-- `@category` — Core APIs only.
-- `@since Moodle 2.1`, `@see other_function()`, `@link https://...`, `@throws`,
-  `@deprecated since Moodle 2.0 MDL-12345`, `@todo MDL-xxxx`, `@uses exit`.
-- Never use `@inheritdoc` as a complete docblock replacement; use `#[\Override]` instead.
+#### Types
+Short names (`bool`, `int`, not `boolean`/`integer`); `array`/`stdClass` (not `Array`/`object`); class
+names; `true|false|null` lowercase; `static`, `self`, `$this`, `void`. Arrays of a type as `int[]`;
+alternatives with a pipe (`int|false`); primitives lowercase, classes in their original case.
 
-File header (GPL block + docblock):
+```php
+/**
+ * @param stdClass $obj Some object.
+ * @return static The instance itself.
+ */
+```
+
+#### Tags
+
+##### `@copyright`
+`@copyright 2008 Kim Bloggs` (year + original creator). Never change existing ones.
+
+##### `@license`
+`@license https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later`
+
+##### `@param`
+`@param type $name Description.`: just a space after the name, no hyphens.
+
+##### `@return`
+`@return type Description.`: mandatory if the function has a return statement; description optional
+when obvious.
+
+##### `@var`
+`@var type Description.` for properties and constants (never `@const`). Inline `@var` in method
+bodies only when no type can express a value; don't abuse.
+
+##### `@uses`
+`@uses exit` when a function may call `die`/`exit`.
+
+##### `@access`
+`@access private` only where the definition lacks access control; never redundant `public` on functions.
+
+##### `@package`
+Required, exactly one Frankenstyle component: plugin (`mod_quiz`), core subsystem (`core_enrol`), or
+`core`. No `@subpackage` standard.
+
+##### `@category`
+Only for public items that are part of (or exemplify) a Core API; value from the API guides list
+(`@category preferences`).
+
+##### `@since`
+New core classes/functions/methods: `@since Moodle 2.1`.
+
+##### `@see`
+Related code element (not URLs), also inline: `{@see get_string()}`.
+
+##### `@link`
+External URL, also inline: `{@link https://docs.moodle.org/dev/Core_APIs}`.
+
+##### `@deprecated` (and `@todo`)
+State the version and MDL; add `@todo` and `@see`. Optionally `debugging('...', DEBUG_DEVELOPER)`, or
+throw `coding_exception` if unsupportable (see `lib/deprecatedlib.php`).
+
+```php
+ * @deprecated since Moodle 2.0 MDL-12345 - please do not use this function any more.
+ * @todo MDL-22334 This will be deleted in Moodle 2.2.
+ * @see class_name::new_function()
+```
+
+##### `@throws`
+Optional; marks exceptions callers may need to handle.
+
+##### Other specific tags
+Only in context: `@Given/@When/@Then` (Behat steps); `@covers`, `@coversDefaultClass`, `@coversNothing`,
+`@uses`, `@dataProvider`, `@testWith`, `@depends`, `@group`, `@requires`, `@runTestsInSeparateProcesses`,
+`@runInSeparateProcess` (PHPUnit; separate processes only when strictly needed).
+
+### Files
+Every PHP file: GPL block right after `<?php` (no blank line), then a separate docblock with short
+description, optional long description, `@package` (required), `@category` (only if wholly one Core
+API), `@copyright` and `@license` (required). Single-artifact files may skip it if the class docblock
+carries the tags.
 
 ```php
 <?php
@@ -457,15 +615,43 @@ File header (GPL block + docblock):
  */
 ```
 
-Inline comments: `// ` (two slashes + space), first line capitalised, end with
-punctuation. No `#` or `/* */` for single-line. Reference MDL issues where relevant.
+### Classes
+Every class has a complete docblock. In single-artifact files (all of `classes/`) the class docblock is
+enough; `@package`, `@copyright`, `@license` (and optional `@category`) must appear together in one
+docblock of the file.
 
 ```php
-$ratings = [];     // Initialize the empty array.
-// TODO MDL-12345 This works but is a hack needing revision.
+/**
+ * Short description for class.
+ *
+ * @package    mod_mymodule
+ * @copyright  2008 Kim Bloggs
+ * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+class policy_issue {
 ```
 
-Function docblock example:
+### Properties
+Every property gets its own docblock (no DocBlock templates):
+
+```php
+/** @var string This variable does something */
+protected $something;
+```
+
+### Constants
+Class constants documented:
+
+```php
+/**
+ * This is used when Sam is in a good mood.
+ */
+const MOOD_GOOD = 0;
+```
+
+### Functions
+Every function/method has a complete docblock with a description, even if obvious. Unchanged overrides:
+omit the docblock and use `#[\Override]`; `@inheritdoc`/`@see` as a docblock replacement is forbidden.
 
 ```php
 /**
@@ -478,8 +664,7 @@ Function docblock example:
  */
 ```
 
-Constants/defines documented:
-
+### Defines
 ```php
 /**
  * PARAM_INT - integers only, use when expecting only numbers.
@@ -487,6 +672,22 @@ Constants/defines documented:
 define('PARAM_INT', 'int');
 ```
 
+### Inline comments
+`// ` (two slashes + space), aligned with the code; first char capital (or digit or `...`); end with
+`.`, `?` or `!`. No `#` or `/* */`. No MDL references except in TODOs.
+
+```php
+$ratings = [];     // Initialize the empty array.
+```
+
+#### Using TODO
+Every TODO carries an MDL reference (and goes on the Review TODOs epic MDL-47779):
+
+```php
+// TODO MDL-12345 This works but is a hack needing revision.
+```
+
+### CVS keywords
 No CVS keywords (`$Id$`) since Moodle 2.0.
 
 ---
@@ -494,17 +695,24 @@ No CVS keywords (`$Id$`) since Moodle 2.0.
 ## Exceptions
 
 Use exceptions to report errors (esp. in library code). `print_error()` deprecated since
-2021 — throw `moodle_exception()` instead. Only for erroneous situations, not normal flow.
+2021: throw `moodle_exception` instead. Only for erroneous situations, not normal flow.
 
-Base: `moodle_exception`. Notable: `coding_exception` (developer mistake), `dml_exception`
-(DB failure), `file_exception`. Since Moodle 4.5, custom exceptions may live in
-`classes/exception/` with namespace `<plugin>\exception`.
+### Exception classes
+Base: `moodle_exception`; create subclasses where useful. Notable: `coding_exception` (developer mistake;
+helpful message), `dml_exception` (DB failure), `file_exception` (File API). Since 4.5 custom exceptions
+may live in `classes/exception/` with namespace `<plugin>\exception`.
+
+```php
+throw new \coding_exception('Invalid $mode: ' . $mode);
+```
 
 ---
 
-## Dangerous Constructs (highly discouraged)
+## Dangerous functions and constructs
 
-1. `eval()`
+Highly discouraged (security):
+
+1. `eval()` (language packs excepted)
 2. `preg_replace()` with `/e` modifier (use callbacks)
 3. Backticks for shell execution
 4. `goto` / labels
@@ -512,7 +720,17 @@ Base: `moodle_exception`. Notable: `coding_exception` (developer mistake), `dml_
 
 ---
 
-## Git Commits
+## Policy about coding-style only fixes
+
+New code must conform; old code is fixed progressively (MDL-43233):
+
+1. Related style fixes (same lines, adjacent comments) are fine inside a real issue.
+2. Unrelated style fixes inside a real issue: main only, separate commit.
+3. Style-only issues: main only, first 2 months of a cycle.
+
+---
+
+## Git commits
 
 ```
 MDL-xxxx CODE AREA: short summary (72 chars soft limit)
@@ -521,7 +739,8 @@ Blank line, then detailed explanation. Include motivation and
 contrast with previous behavior.
 ```
 
-Tell a clean history; include MDL issue number + CODE AREA; don't split atomic changes.
+Tell a clean history; include MDL issue number + CODE AREA; don't split atomic changes, don't include
+pre-integration bug fixes or repeated revisions of the same lines.
 
 ---
 
@@ -529,4 +748,4 @@ Tell a clean history; include MDL issue number + CODE AREA; don't split atomic c
 
 - Defers to PSR-12 and PSR-1 where unspecified.
 - Separate guides: SQL coding style, JavaScript Coding Style, CSS Coding Style,
-  Frankenstyle naming.
+  Frankenstyle naming, PHP CodeSniffer, accessibility coding guidelines.

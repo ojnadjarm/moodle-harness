@@ -1,0 +1,66 @@
+# Golden rows; core 5.3 install.xml copied by hand (unchanged tables, COMMENT attributes and indentation removed), the test never reads a Moodle checkout.
+# Upgrade rows: component|table|statement, every statement of the generated block in order; '-' = savepoint. Checked against core 5.3 db/upgrade.php:
+# mod/quiz:115,124: :124 says previous 'password' while install.xml puts duedate after reasonformat: install.xml wins.
+# mod/assign:268,277,286 equal. mod/assign/feedback/file:51,56 equal. mod/quiz/accessrule/seb:81,95 equal.
+# mod/assign/feedback/comments:47 says '20' while install.xml says LENGTH="10": install.xml wins.
+# mod/assign/feedback/editpdf:50-88: annot/rot say previous 'pageno' while install.xml puts markid after gradeid: install.xml wins; core drops the old rot index after the fields, the generator first.
+mod_quiz|quiz|$field = new xmldb_field('duedate', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'precreateattempts');
+mod_quiz|quiz|if (!$dbman->field_exists($table, $field)) {
+mod_quiz|quiz|$dbman->add_field($table, $field);
+mod_quiz|quiz_overrides|$field = new xmldb_field('duedate', XMLDB_TYPE_INTEGER, '10', null, null, null, null, 'reasonformat');
+mod_quiz|quiz_overrides|if (!$dbman->field_exists($table, $field)) {
+mod_quiz|quiz_overrides|$dbman->add_field($table, $field);
+mod_quiz|-|upgrade_mod_savepoint(true, VERSION, 'quiz');
+assignfeedback_comments|assignfeedback_comments|$field = new xmldb_field('mark', XMLDB_TYPE_INTEGER, '10', null, null, null, null, 'grade');
+assignfeedback_comments|assignfeedback_comments|if (!$dbman->field_exists($table, $field)) {
+assignfeedback_comments|assignfeedback_comments|$dbman->add_field($table, $field);
+assignfeedback_comments|-|upgrade_plugin_savepoint(true, VERSION, 'assignfeedback', 'comments');
+mod_assign|assign|$field = new xmldb_field('optionalmarkercount', XMLDB_TYPE_INTEGER, '2', null, XMLDB_NOTNULL, null, '0', 'markercount');
+mod_assign|assign|if (!$dbman->field_exists($table, $field)) {
+mod_assign|assign|$dbman->add_field($table, $field);
+mod_assign|assign_allocated_marker|$field = new xmldb_field('optional', XMLDB_TYPE_INTEGER, '1', null, XMLDB_NOTNULL, null, '0', 'marker');
+mod_assign|assign_allocated_marker|if (!$dbman->field_exists($table, $field)) {
+mod_assign|assign_allocated_marker|$dbman->add_field($table, $field);
+mod_assign|assign_allocated_marker|$field = new xmldb_field('enabled', XMLDB_TYPE_INTEGER, '1', null, null, null, null, 'optional');
+mod_assign|assign_allocated_marker|if (!$dbman->field_exists($table, $field)) {
+mod_assign|assign_allocated_marker|$dbman->add_field($table, $field);
+mod_assign|-|upgrade_mod_savepoint(true, VERSION, 'assign');
+assignfeedback_editpdf|assignfeedback_editpdf_rot|$index = new xmldb_index('gradeid_pageno', XMLDB_INDEX_UNIQUE, ['gradeid', 'pageno']);
+assignfeedback_editpdf|assignfeedback_editpdf_rot|if ($dbman->index_exists($table, $index)) {
+assignfeedback_editpdf|assignfeedback_editpdf_rot|$dbman->drop_index($table, $index);
+assignfeedback_editpdf|assignfeedback_editpdf_cmnt|$field = new xmldb_field('markid', XMLDB_TYPE_INTEGER, '10', null, null, null, null, 'gradeid');
+assignfeedback_editpdf|assignfeedback_editpdf_cmnt|if (!$dbman->field_exists($table, $field)) {
+assignfeedback_editpdf|assignfeedback_editpdf_cmnt|$dbman->add_field($table, $field);
+assignfeedback_editpdf|assignfeedback_editpdf_cmnt|$key = new xmldb_key('markid', XMLDB_KEY_FOREIGN, ['markid'], 'assign_mark', ['id']);
+assignfeedback_editpdf|assignfeedback_editpdf_cmnt|$dbman->add_key($table, $key);
+assignfeedback_editpdf|assignfeedback_editpdf_annot|$field = new xmldb_field('markid', XMLDB_TYPE_INTEGER, '10', null, null, null, null, 'gradeid');
+assignfeedback_editpdf|assignfeedback_editpdf_annot|if (!$dbman->field_exists($table, $field)) {
+assignfeedback_editpdf|assignfeedback_editpdf_annot|$dbman->add_field($table, $field);
+assignfeedback_editpdf|assignfeedback_editpdf_annot|$key = new xmldb_key('markid', XMLDB_KEY_FOREIGN, ['markid'], 'assign_mark', ['id']);
+assignfeedback_editpdf|assignfeedback_editpdf_annot|$dbman->add_key($table, $key);
+assignfeedback_editpdf|assignfeedback_editpdf_rot|$field = new xmldb_field('markid', XMLDB_TYPE_INTEGER, '10', null, null, null, null, 'gradeid');
+assignfeedback_editpdf|assignfeedback_editpdf_rot|if (!$dbman->field_exists($table, $field)) {
+assignfeedback_editpdf|assignfeedback_editpdf_rot|$dbman->add_field($table, $field);
+assignfeedback_editpdf|assignfeedback_editpdf_rot|$key = new xmldb_key('markid', XMLDB_KEY_FOREIGN, ['markid'], 'assign_mark', ['id']);
+assignfeedback_editpdf|assignfeedback_editpdf_rot|$dbman->add_key($table, $key);
+assignfeedback_editpdf|assignfeedback_editpdf_rot|$index = new xmldb_index('gradeid_markid_pageno', XMLDB_INDEX_UNIQUE, ['gradeid', 'markid', 'pageno']);
+assignfeedback_editpdf|assignfeedback_editpdf_rot|if (!$dbman->index_exists($table, $index)) {
+assignfeedback_editpdf|assignfeedback_editpdf_rot|$dbman->add_index($table, $index);
+assignfeedback_editpdf|-|upgrade_plugin_savepoint(true, VERSION, 'assignfeedback', 'editpdf');
+assignfeedback_file|assignfeedback_file|$field = new xmldb_field('mark', XMLDB_TYPE_INTEGER, '10', null, null, null, null, 'grade');
+assignfeedback_file|assignfeedback_file|if (!$dbman->field_exists($table, $field)) {
+assignfeedback_file|assignfeedback_file|$dbman->add_field($table, $field);
+assignfeedback_file|assignfeedback_file|$key = new xmldb_key('mark', XMLDB_KEY_FOREIGN, ['mark'], 'assign_mark', ['id']);
+assignfeedback_file|assignfeedback_file|$dbman->add_key($table, $key);
+assignfeedback_file|-|upgrade_plugin_savepoint(true, VERSION, 'assignfeedback', 'file');
+quizaccess_seb|quizaccess_seb_quizsettings|$field = new xmldb_field('allowscreencapture', XMLDB_TYPE_INTEGER, '1', null, null, null, null, 'allowcapturemicrophone');
+quizaccess_seb|quizaccess_seb_quizsettings|if (!$dbman->field_exists($table, $field)) {
+quizaccess_seb|quizaccess_seb_quizsettings|$dbman->add_field($table, $field);
+quizaccess_seb|quizaccess_seb_quizsettings|$field = new xmldb_field('alloweddisplaysmaxnumber', XMLDB_TYPE_INTEGER, '1', null, null, null, null, 'allowscreencapture');
+quizaccess_seb|quizaccess_seb_quizsettings|if (!$dbman->field_exists($table, $field)) {
+quizaccess_seb|quizaccess_seb_quizsettings|$dbman->add_field($table, $field);
+quizaccess_seb|-|upgrade_plugin_savepoint(true, VERSION, 'quizaccess', 'seb');
+# mod/choice/backup/moodle2/backup_choice_stepslib.php:40-55: element|wrapper|fields; gated = only with userinfo.
+choice|choice||name intro introformat publish showresults display allowupdate allowmultiple showunanswered limitanswers timeopen timeclose timemodified completionsubmit showpreview includeinactive showavailable
+choice|option|options|text maxanswers timemodified
+choice|answer|answers|userid optionid timemodified|gated|user:userid

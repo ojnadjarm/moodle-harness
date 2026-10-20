@@ -92,16 +92,8 @@ symptom that matches one of these.
 - **`CoreUrl` (`src/core/static/url.ts`) is the app's URL toolbox** — `toAbsoluteURL`,
   `removeUrlParts`, `extractUrlParams`, pluginfile helpers. Check it (and `CoreDom`,
   `CoreText`) before hand-writing any URL/HTML string manipulation.
-
-## Helpful commands
-
-- Moodle App shells need the repo's Node first: `source ~/.nvm/nvm.sh && nvm use`
-  (engines pin Node 24; the system Node silently differs). Serve headless with
-  `npx ionic serve --no-open` — `npm start` assumes a local browser and SSL.
-- Trace how the app transforms a URL/HTML string:
-  `grep -rn "removeUrlParts\|toAbsoluteURL\|restoreSourcesInHtml" src/core --include=*.ts`
-- Run a single app test file: `npx jest <path/to/file.test.ts>` (run
-  `NODE_ENV=testing npx gulp` first if lang/env assets are stale).
+- App setup, serve, one test, lint: `moodleapp-instructions.md`. Trace URL/HTML
+  transforms: `grep -rn "removeUrlParts\|toAbsoluteURL\|restoreSourcesInHtml" src/core --include=*.ts`
 
 ## Docker
 
@@ -116,16 +108,13 @@ symptom that matches one of these.
   moodle-shared: {aliases: [<alias>]}}`; `networks: {moodle-shared: {external: true}}`), then
   add a `server_name <host>` block to `~/moodle-envs/shared/nginx.conf` proxying to that alias
   and `nginx -s reload`. Keeps the original wwwroot working with no change to the base compose.
-  (Done for a legacy `~/moodle-5.1` stack → `moodle-dev.localhost`.)
 - **Container shows "Up" but Moodle 500s with "Database connection failed"** — after a
-  WSL2/Docker Desktop restart, a `restart: always` app container can start before its
-  compose network exists and comes up with NO networks attached (`docker inspect <app>
-  --format '{{json .NetworkSettings.Networks}}'` returns `{}`), so DNS for the `db`
-  service fails; host port bindings also come up corrupted. Neither `docker restart` nor
-  a plain `docker compose up -d` fixes it (config unchanged → no recreate). Fix:
-  `docker compose up -d --force-recreate app` from the compose directory. Permanent
-  prevention: remove `restart: always` from the app service and start the stack
-  manually with `docker compose up -d` after each boot.
+  reboot or Docker daemon restart, an auto-restarted app container can come up with NO
+  networks attached (`docker inspect <app> --format '{{json .NetworkSettings.Networks}}'`
+  returns `{}`), so DNS for the `db` service fails; host port bindings can be lost too.
+  Neither `docker restart` nor a plain `docker compose up -d` fixes it (config unchanged →
+  no recreate). Fix: `docker compose up -d --force-recreate app` from the compose
+  directory. Envs here use `restart: unless-stopped` and come back after a reboot; keep it.
 
 - **Compose force-recreate fails with "pull access denied" after the network-loss bug** —
   if `docker-compose.yml` drifted since the containers were created (e.g. a service now
@@ -138,11 +127,13 @@ symptom that matches one of these.
   port <app>` prints nothing: the container was created while another stack held the same
   host port (two Moodle stacks both binding 80 and 3306 can't run together). Stop the other
   stack, then `docker compose up -d --force-recreate app`; verify with `docker port <app>`.
-  To run both stacks at once, start the second one with a compose override that drops the
-  host ports (`ports: !reset []` on `app` and `db`) and reach it via `docker exec`.
-- **Containers are often stopped after a reboot** — `docker start <db> <app>` (and give the
-  DB ~8s) before running PHPUnit or CLI scripts; never assume a version, list with
-  `docker ps -a`.
+  Both at once: the proxy override above.
+- **An env is stopped** (only after a manual `docker compose stop`; reboots restart
+  them) — `docker compose up -d` in `~/moodle-envs/<ver>` and wait for the DB before
+  PHPUnit or CLI scripts; never assume a version, list with `docker ps -a`.
+- **`mtest: no Moodle root (vendor/) above <plugin>`** — the env has no `vendor/`.
+  `/moodle-install` runs composer since T755; old envs: `composer install` once in the
+  app container.
 
 ## Upgrade / plugin testing
 
@@ -155,8 +146,23 @@ symptom that matches one of these.
   comparison and runs the pending upgrade steps. (On Moodle 5.1+ the CLI scripts live at
   the repo root `admin/cli/`, not under `public/`.)
 - **PHPUnit fails with schema/version errors right after a `version.php` or
-  `db/install.xml` change** — the test DB is stale; re-run
-  `admin/tool/phpunit/cli/init.php` in the container (path is under `public/` on 5.1+).
+  `db/install.xml` change** — the test DB is stale; run `$S/mtest init phpunit` in the
+  plugin dir.
+- **Raw PHPUnit fails "initialised for different version" or `Class "…_testcase" not
+  found`** — stale test env after a core/plugin version change, or a single-file run that
+  never loads the plugin's `tests/` base class. Fix: `mtest phpunit <file>` (inits only when
+  stale, scopes the suite).
+- **PHPUnit rc 0 but nothing ran** — PHPUnit 11 prints "No tests executed!" and exits 0
+  (`failOnEmptyTestSuite` off) on a typo'd `--filter` or a class named unlike its file.
+  Check the test count, never rc alone.
+- **Behat runs 0 scenarios** — `config.php` has `$CFG->behat_wwwroot` equal to `wwwroot`,
+  so Behat refuses the site. Fix: give `behat_wwwroot` its own host (e.g. the app alias).
+- **Cron fails every minute with "upgrade pending" after a test** — a throwaway plugin
+  left on disk (or deleted without uninstall) leaves the site mid-upgrade. Fix: install
+  fixtures with `mfixture with <env> <dir> -- <cmd>` (or `add`/`rm`), which cleans up.
+- **`moodle-plugin-ci validate|phpdoc|grunt .` exits 1: "Failed to find Moodle config file"**
+  — on the host there is no Moodle root; `-m <root>` then fatals on
+  `$CFG->dataroot`. An environment failure, not the code: don't fix the plugin for it.
 - **A whole-site PHPUnit run fatals on "Cannot declare class …_test"** — two plugins ship
   a test class with the same name (e.g. `event_processor_test` in `tool_example` and
   `tool_trigger`). Always scope with `--testsuite <component>_testsuite`.
@@ -170,3 +176,37 @@ symptom that matches one of these.
   `$OUTPUT` is a real renderer only because `core_external::get_fragment()` calls
   `$OUTPUT->header()` first; under PHPUnit it is still `core\output\bootstrap_renderer`, so a
   `renderer_base` type hint fatals. Use `$PAGE->get_renderer('core')` inside the callback.
+- **A hook newer than `requires`** — `$S/mapicompat` prints `\x\hook\y added after X.Y`; hook.py
+  refuses it (rc 1, `--force` writes it with a warning).
+- **report_ missing from the course Reports menu** — lib.php needs
+  `report_<x>_extend_navigation_course()`; generate.py's report_ type writes it.
+- **The app cannot call the plugin's WS** — its db/services.php entry needs
+  `'services' => [MOODLE_OFFICIAL_MOBILE_SERVICE]`: `external.py --mobile`.
+- **`table.py --page index` refuses a fresh report_ plugin** ("already exists") — generate.py
+  wrote a heading-only index.php; delete that stub first (T1029 #1).
+- **A plugin built from helpers passes CI yet does nothing** — message.py, cache.py and output.py
+  write only their class + test: call `notifier::send_<x>()`, fill/purge the cache and render the
+  output class yourself; no helper inserts table rows (T1028 #1-#3).
+- **A message provider `--capability` in a course context reaches nobody** — core checks it in the
+  system context (lib/messagelib.php); use a CONTEXT_SYSTEM cap (T1028 #7).
+- **external.py / mobile.py with a course cap return every course's rows** — the cap is checked in
+  context_system (external.py) and no `courseid` filter is added: add the param, `validate_context()`
+  and the filter by hand (T1028 #4, #6).
+- **`$S/mprivacy --static` WARNs on privacy.py's own provider** — the scan does not follow its
+  `tables()` loop; read the provider, not a fault (T1028 #5).
+
+## Shared env (parallel agents)
+
+- **Live run collides with another agent** — `$S/mfixture status 5.2` first (rc 0 free,
+  1 busy); `mfixture` add/with/rm wait on the env lock.
+- **PHPUnit init "Can not use database for testing", `--reset` "Can not drop non-test site!!"** — stray
+  `phpu_` tables, no `phpu_config`. `$S/mtest init phpunit --reset` drops them via mdb and re-inits
+  (also from a Moodle root).
+- **Two PHPUnit inits on one env collide** (hundreds of stray `phpu_` tables) — another agent's live
+  test inits outside the mfixture lock; run live bodies inside `mfixture with` (T1029 #2).
+- **Behat fails at login with "TODO: handle \core\event\user_loggedin"** — a foreign fixture's
+  observer stub calls debugging(); not your plugin: `$S/mfixture status 5.2`, re-run when it is gone (T1029 #3).
+- **"Site is being upgraded" (or "unknown plugin type")** — another agent's upgrade.php:
+  wait (`$S/mfixture status 5.2`), never reinstall.
+- **A helper's test goes red mid-wave** — a helper it imports is mid-edit by another ticket;
+  `claims check <imported files>` and re-run once they are free.

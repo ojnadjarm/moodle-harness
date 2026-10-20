@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Offline: argument checks against a fake docker in a no-network sandbox. Live: apply, check, idempotency and drift on
-# the throwaway moodle53 env only (AISETUP_TEST_ENV may name another throwaway env; never 4.5/Vass).
+# the throwaway moodle53 env only, with MOODLE_HARNESS_LIVE=1 (AISETUP_TEST_ENV may name another throwaway env; never 4.5/Vass).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 cli=$here/../ai-setup
@@ -36,6 +36,9 @@ check "api key never in the spec" '! spec | grep -q sk-fixture'
 "${sandbox[@]}" "$cli" moodle53 --check
 check "--check sends no spec" '! grep -q -- --spec-b64 "$out/argv" && grep -qx -- --mode=check "$out/argv"'
 
+if [ "${MOODLE_HARNESS_LIVE:-0}" != 1 ]; then
+  echo "SKIP live: set MOODLE_HARNESS_LIVE=1"; exit $fail
+fi
 if ! docker ps --format '{{.Names}}' | grep -qx "$live-app-1"; then
   echo "FAIL live: $live-app-1 is not running"; exit 1
 fi

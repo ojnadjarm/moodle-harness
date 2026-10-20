@@ -1,30 +1,52 @@
 #!/usr/bin/env bash
 # Run PHPUnit or Behat for one Moodle plugin in its container; init only when stale, compact output.
 # Usage: mtest phpunit|behat [path] [--filter X | --tags X] [--parallel N] [extra runner args]
-#   path: plugin dir, a *_test.php file, a .feature file or a behat dir (default: $PWD).
+#        mtest phpunit [path] --changed [base]: only tests covering the git change vs base (default HEAD, plus untracked).
+#   --changed: changed *_test.php run; classes/x/y.php -> tests/x/y_test.php, else tests/y_test.php, else whole suite;
+#     other PHP -> whole suite. Each test class is anchored in the filter: \\y_test(::|$).
+#   Deprecations > 0 in the summary (PHPUnit 11+): at most 5 grouped lines (count, message, first file:line).
+#        mtest init phpunit|behat [path]   (or --init-only): init (niced) only when stale, print seconds.
+#   --reset (phpunit): util.php --drop, then a niced init. A failed init counts the phpunit_prefix tables (mdb).
+#     When the drop refuses ("Can not drop non-test site", no phpu_config), it lists the phpunit_prefix tables and
+#     drops them with mdb --write, then inits; refused (rc 1) for an empty prefix, a prefix the site prefix starts
+#     with, a vass/4.5 env, or a listed table without the prefix.
+#   path: plugin dir, a *_test.php file, a .feature file or a behat dir (default: $PWD); it may follow the flags.
+#     A Moodle root (no plugin) takes init or --reset only.
 #   --parallel N (behat): N sites via init.php --parallel, features round-robin over them; N is capped by
 #     MTEST_SELENIUM_CAP (default 8) minus busy sessions on MTEST_SELENIUM (default http://localhost:4444/wd/hub).
-# Exit: the runner's exit code; 2 usage, 3 no container. Full log path is printed last.
+#   Logs: one home per plugin component (scripts/mlog), pruned to 7 days / 50 runs.
+# Exit: the runner's exit code (1 when phpunit ran no tests); 2 usage, 3 no container. Full log path is printed last.
 set -uo pipefail
+. "$(dirname "$(realpath "$0")")/mlog"
 
 die() { echo "mtest: $2" >&2; exit "$1"; }
+initonly=0
+[ "${1:-}" = init ] && { initonly=1; shift; }
 mode="${1:-}"; shift || true
 case "$mode" in
     phpunit|behat) ;;
     -h|--help) sed -n '2,/^# Exit/s/^# \{0,1\}//p' "$0"; exit 0;;
-    *) die 2 "usage: mtest phpunit|behat [path] [--filter X|--tags X] [--parallel N] [args]";;
+    *) die 2 "usage: mtest [init] phpunit|behat [path] [--filter X|--tags X] [--parallel N] [--init-only] [--reset] [args]";;
 esac
 
 target="$PWD"
 if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then target="$(realpath "$1")"; shift; fi
 [ -e "$target" ] || die 2 "no such path: $target"
 
-par=1 rest=()
+par=1 rest=() filter="" changed="" reset=0 pathset=0; [ "$target" != "$PWD" ] && pathset=1
 while [ $# -gt 0 ]; do
     case "$1" in
+        --init-only) initonly=1; shift;;
+        --filter) [ "$mode" = phpunit ] || { rest+=("$1"); shift; continue; }; [ $# -ge 2 ] || die 2 "--filter needs a value"
+            filter="$2"; shift 2;;
+        --filter=*) [ "$mode" = phpunit ] || { rest+=("$1"); shift; continue; }; filter="${1#*=}"; shift;;
+        --changed) [ "$mode" = phpunit ] || die 2 "--changed is phpunit only"; changed=HEAD; shift
+            if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then changed="$1"; shift; fi;;
+        --reset) [ "$mode" = phpunit ] || die 2 "--reset is phpunit only"; reset=1; shift;;
         --parallel) par="${2:-}"; shift 2 || shift;;
         --parallel=*) par="${1#*=}"; shift;;
-        *) rest+=("$1"); shift;;
+        *) if [ "$pathset" = 0 ] && [ "${1#-}" = "$1" ] && [ -e "$1" ]; then target="$(realpath "$1")"; pathset=1
+            else rest+=("$1"); fi; shift;;
     esac
 done
 [[ "$par" =~ ^[1-9][0-9]*$ ]] || die 2 "--parallel needs a positive number"
@@ -32,8 +54,40 @@ set -- ${rest[@]+"${rest[@]}"}
 
 plugin="$target"; [ -f "$plugin" ] && plugin="$(dirname "$plugin")"
 while [ "$plugin" != / ] && ! grep -qs '\$plugin->component' "$plugin/version.php"; do plugin="$(dirname "$plugin")"; done
-[ "$plugin" = / ] && die 2 "no plugin version.php above $target"
-comp="$(grep -hoP "\\\$plugin->component\s*=\s*'\K[^']+" "$plugin/version.php")"
+comp="$(mlog_component "$plugin")"
+if [ "$plugin" = / ]; then
+    [ "$mode" = phpunit ] && { [ "$initonly" = 1 ] || [ "$reset" = 1 ]; } ||
+        die 2 "no plugin version.php above $target (a Moodle root takes init or --reset only)"
+    plugin="$target"; [ -f "$plugin" ] && plugin="$(dirname "$plugin")"
+    comp=core initonly=1
+fi
+
+if [ -n "$changed" ]; then
+    [ -z "$filter" ] || die 2 "--changed takes no --filter"
+    files="$(cd "$plugin" && git diff --name-only --relative "$changed" -- && git ls-files --others --exclude-standard)" ||
+        die 2 "git diff vs $changed failed in $plugin"
+    [ -n "$files" ] || { echo "mtest: no changes vs $changed"; exit 0; }
+    echo "mtest: --changed vs $changed"
+    whole=0 tests=()
+    while IFS= read -r f; do
+        to=""
+        case "$f" in
+            tests/*_test.php) [ -f "$plugin/$f" ] && to="$f" || to="skip (deleted)";;
+            classes/*.php) t="tests/${f#classes/}"; t="${t%.php}_test.php"; b="tests/$(basename "$f" .php)_test.php"
+                if [ -f "$plugin/$t" ]; then to="$t"; elif [ -f "$plugin/$b" ]; then to="$b"; fi;;
+            *.php) ;;
+            *) to="skip (not PHP)";;
+        esac
+        [ -z "$to" ] && { to="${comp}_testsuite"; whole=1; }
+        [ "${to%%_test.php}" != "$to" ] && tests+=("$(basename "$to" .php)")
+        echo "  $f -> $to"
+    done <<<"$files"
+    if [ "$whole" = 0 ]; then
+        [ ${#tests[@]} -gt 0 ] || { echo "mtest: no changes with PHPUnit tests vs $changed"; exit 0; }
+        filter="$(printf '\\\\%s(::|$)\n' "${tests[@]}" | sort -u | paste -sd'|')"
+    fi
+    target="$plugin"
+fi
 
 hostroot="$plugin"
 until [ -f "$hostroot/vendor/bin/phpunit" ] || { [ -f "$hostroot/config.php" ] && [ -d "$hostroot/vendor" ]; }; do
@@ -45,7 +99,7 @@ adm=admin web="$D"; [ -d "$hostroot/public/admin" ] && adm=public/admin web="$D/
 incont() { printf '%s' "$D${1#"$hostroot"}"; }
 dx() { docker exec "$C" bash -c "cd '$D' && $1"; }
 
-log="$(mktemp "${TMPDIR:-/tmp}/mtest-$mode-XXXX.log")"
+log="$(mlog_new "mtest-$mode" "$comp")" || die 1 "cannot create a log in $(mlog_dir "$comp")"
 t0=$(date +%s)
 
 [ "$mode" = behat ] && mapfile -t feats < <(find "$target" -name '*.feature' | sort)
@@ -78,10 +132,72 @@ ready() {
 }
 initenv() {
     local jobs=""; [ "$usepar" = 1 ] && jobs=" --parallel=$(( par > envpar ? par : envpar )) --maxruns=${MTEST_INIT_JOBS:-3}"
-    echo "mtest: $mode env stale -> init$jobs (one-off, minutes)"
+    if [ "$reset" = 1 ]; then echo "mtest: $mode env reset -> init (one-off, minutes)"; else echo "mtest: $mode env stale -> init$jobs (one-off, minutes)"; fi
     # A parallel init over existing run sites drops them and fails, so start from a dropped env.
     [ -n "$jobs" ] && dx "php $adm/tool/behat/cli/util.php --drop" >"$log.drop" 2>&1
-    dx "php $adm/tool/$mode/cli/init.php --disable-composer$jobs" >"$log.init" 2>&1 || { tail -5 "$log.init"; die 1 "init failed, log $log.init"; }
+    dx "nice -n 19 php $adm/tool/$mode/cli/init.php --disable-composer$jobs" >"$log.init" 2>&1; local irc=$?
+    [ "$irc" = 0 ] || tail -5 "$log.init"
+    [ "$mode" = phpunit ] && { [ "$irc" != 0 ] || grep -qE 'not empty|partially' "$log.init"; } && stray
+    [ "$irc" = 0 ] || die 1 "init failed, log $log.init"
+}
+cfgval() { sed -nE "s/^\\\$CFG->$1[[:space:]]*=[[:space:]]*['\"]([^'\"]*)['\"].*/\\1/p" "$hostroot/config.php" | head -1; }
+mdb() { (cd "$hostroot" && "$(dirname "$(realpath "$0")")/mdb" "$@"); }
+# Sets $pre and $tables: the phpunit_prefix tables in the env DB (mdb, read-only); rc 1 when the lookup fails.
+phputables() {
+    local sch rc
+    pre="$(cfgval phpunit_prefix)" tables=""
+    [ -n "$pre" ] || return 0
+    sch="DATABASE()"; [ "$(cfgval dbtype)" = pgsql ] && sch="current_schema()"
+    tables="$(mdb "SELECT table_name FROM information_schema.tables WHERE table_schema = $sch AND table_name LIKE '${pre//_/\\_}%' ORDER BY table_name" 2>"$log.stray")"; rc=$?
+    [ "$rc" = 0 ] || { echo "mtest: stray-table lookup failed ($(grep -m1 . "$log.stray" || echo "mdb rc $rc"))"; tables=""; return 1; }
+    tables="$(tail -n +2 <<<"$tables")"
+}
+# Names the phpunit_prefix tables left in the env DB and the --reset fix.
+stray() {
+    phputables || return 0
+    [ -n "$tables" ] && echo "mtest: $(wc -l <<<"$tables") stray $pre tables (e.g. $(head -1 <<<"$tables")); fix: mtest init phpunit --reset $(printf '%q' "$hostroot")"
+}
+# Drops the phpunit_prefix tables util.php --drop refuses to touch (no phpu_config), after the guards.
+dropstray() {
+    local site t
+    case "$(realpath "$hostroot")/" in */vass*|*/4.5*) die 1 "drop refused; $hostroot is a vass/4.5 env, never touched";; esac
+    case "$C" in *vass*|moodle45*) die 1 "drop refused; container $C is a vass/4.5 env, never touched";; esac
+    pre="$(cfgval phpunit_prefix)" site="$(cfgval prefix)"
+    [ -n "$pre" ] || die 1 "drop refused and config.php has no \$CFG->phpunit_prefix; log $log.drop"
+    case "$site" in "$pre"*) die 1 "drop refused; phpunit_prefix '$pre' is a prefix of the site prefix '$site', not dropping";; esac
+    phputables || die 1 "drop refused and the $pre table lookup failed; log $log.drop"
+    [ -n "$tables" ] || die 1 "drop refused with no $pre tables left; log $log.drop"
+    while IFS= read -r t; do
+        [[ "$t" == "$pre"* && "$t" =~ ^[A-Za-z0-9_]+$ ]] || die 1 "listed table '$t' lacks the $pre prefix; not dropping"
+    done <<<"$tables"
+    echo "mtest: drop refused (no ${pre}config); dropping $(wc -l <<<"$tables") $pre tables: $(paste -sd' ' <<<"$tables")"
+    mdb --write "DROP TABLE $(paste -sd, <<<"$tables" | sed 's/,/, /g')" >"$log.dropstray" 2>&1 ||
+        { tail -5 "$log.dropstray"; die 1 "mdb --write drop failed, log $log.dropstray"; }
+}
+# Groups the deprecation lists of a PHPUnit 11 log: count, message, first file:line; at most 5 lines.
+deps() {
+    awk -v D="$D" -v H="$hostroot" '
+        function flush() { if (msgs != "") { m = split(msgs, a, "\034"); for (j = 2; j <= m; j++) add(a[j], loc, cnt ? cnt : 1) }; msgs = ""; loc = ""; cnt = 0; trig = 0 }
+        function add(msg, l, c,   k) {
+            k = msg ~ /^Metadata found in doc-comment/ ? "Metadata found in doc-comment: expected (@covers, guidelines)" : substr(msg, 1, 120)
+            if (!(k in n)) { first[k] = index(l, D) == 1 ? H substr(l, length(D) + 1) : l }
+            n[k] += c
+        }
+        /^[0-9]+ tests? triggered [0-9]+ PHPUnit deprecations?:$/ { flush(); sec = "unit"; next }
+        /^[0-9]+ tests? triggered [0-9]+ (PHP )?deprecations?:$/ { flush(); sec = "php"; next }
+        /^There (was|were) [0-9]+ PHPUnit test runner deprecations?:$/ { flush(); sec = "runner"; next }
+        /^(--$|There (was|were) [0-9]+ |[0-9]+ tests? triggered |OK|FAILURES!|ERRORS!|Tests: )/ { flush(); sec = ""; next }
+        sec == "" || /^$/ { next }
+        /^[0-9]+\) / { flush(); t = $0; sub(/^[0-9]+\) /, "", t)
+            if (sec == "runner") msgs = "\034" t; else if (sec == "php") loc = t; next }
+        sec == "unit" && /^\// { loc = $0; flush(); next }
+        sec == "unit" && /^\* / { msgs = msgs "\034" substr($0, 3); next }
+        sec == "php" && /^Triggered by:$/ { trig = 1; next }
+        sec == "php" && trig && /^\* / { cnt += match($0, /\([0-9]+ times\)$/) ? substr($0, RSTART + 1) + 0 : 1; next }
+        /^  / || trig { next }
+        msgs == "" { msgs = "\034" $0 }
+        END { flush(); for (k in n) printf "%d\t%s\t%s\n", n[k], k, first[k] }' "$1" | sort -t$'\t' -k1,1nr -k2,2 | head -5 |
+        awk -F'\t' '{ printf "  %dx %s%s\n", $1, $2, $3 != "" ? " (first " $3 ")" : "" }'
 }
 # Writes behatrunI/behat/mtest.yml per worker: that run's config with suite paths cut to its round-robin share.
 split() {
@@ -117,18 +233,31 @@ if [ "$mode" = behat ]; then
     envpar="$(dx "php -r 'echo (int)(json_decode(@file_get_contents(\"$(bdataroot)/run_environment.json\"))->parallel ?? 0);'" 2>/dev/null | tail -1)"; envpar="${envpar:-0}"
     [ "$par" -gt 1 ] || [ "${envpar:-0}" -gt 1 ] && usepar=1
 fi
-ready || initenv
+if [ "$reset" = 1 ]; then
+    echo "mtest: --reset -> util.php --drop"
+    if ! dx "php $adm/tool/phpunit/cli/util.php --drop" >"$log.drop" 2>&1; then
+        grep -q 'Can not drop non-test site' "$log.drop" || { tail -5 "$log.drop"; die 1 "drop failed, log $log.drop"; }
+        dropstray
+    fi
+    initenv
+    [ "$initonly" = 1 ] && { echo "mtest: $mode init in $(( $(date +%s) - t0 ))s"; exit 0; }
+elif [ "$initonly" = 1 ]; then
+    if ready; then echo "mtest: $mode env fresh, no init"; else initenv; echo "mtest: $mode init in $(( $(date +%s) - t0 ))s"; fi
+    exit 0
+else
+    ready || initenv
+fi
 
 args=()
 if [ "$mode" = phpunit ]; then
-    filter=""
-    if [ $# -ge 2 ] && [ "$1" = --filter ]; then filter="$2"; shift 2; fi
     if [ -f "$target" ]; then
         cls="$(basename "$target" .php)"
         filter="$cls${filter:+::$filter}"
     fi
     args=(vendor/bin/phpunit --testsuite "${comp}_testsuite")
     [ -n "$filter" ] && args+=(--filter "$filter")
+    grep -qs display-phpunit-deprecations "$hostroot/vendor/phpunit/phpunit/src/TextUI/Configuration/Cli/Builder.php" &&
+        args+=(--display-deprecations --display-phpunit-deprecations)
 elif [ "$usepar" = 1 ]; then
     bdata="$(bdataroot)"
     dx "for i in \$(seq $par); do [ -e '$web'/behatrun\$i ] || ln -s . '$web'/behatrun\$i; done"
@@ -167,11 +296,19 @@ printf -v cmd '%q ' "${args[@]}"
 dx "$cmd" >"$log" 2>&1
 rc=$?
 grep -v '^Warning: include' "$log" > "$log.clean"
-if grep -qE '^(There (was|were) [0-9]+|--- Failed)' "$log.clean"; then
-    sed -n '/^\(There \(was\|were\) [0-9]\+\|--- Failed\)/,$p' "$log.clean" | head -80
+if [ "$mode" = phpunit ] && [ "$rc" = 0 ] && grep -q 'No tests executed!' "$log.clean"; then
+    echo "mtest: no tests matched (suite ${comp}_testsuite${filter:+, filter $filter})"; rc=1
+fi
+fail="$(grep -nE '^(There (was|were) [0-9]+|--- Failed)' "$log.clean" | grep -v deprecation | head -1)"
+if [ -n "$fail" ]; then
+    sed -n "${fail%%:*},\$p" "$log.clean" | head -80
     echo "..."; tail -3 "$log.clean"
 else
     tail -4 "$log.clean"
+fi
+if [ "$mode" = phpunit ] && grep -qE '(^|, )(PHPUnit )?Deprecations: [1-9]' "$log.clean"; then
+    grouped="$(deps "$log.clean")"
+    [ -n "$grouped" ] && printf 'mtest: deprecations by message (top 5):\n%s\n' "$grouped"
 fi
 echo "mtest: $mode $comp rc=$rc in $(( $(date +%s) - t0 ))s; full log $log"
 exit "$rc"

@@ -1,6 +1,6 @@
 ---
 name: set-moodle-harness
-description: Provision the current machine for the Moodle harness — install moodle-plugin-ci on the host, make the hook scripts executable, idempotently wire the SessionStart + Stop hooks into ~/.claude/settings.json, and verify the whole setup. Use when setting up the harness on a new machine, after cloning/syncing ~/.claude, or to repair/verify an existing harness install.
+description: Provision this machine for the Moodle harness. Use when setting up the harness on a new machine, after cloning/syncing ~/.claude, or to repair/verify a harness install. Installs moodle-plugin-ci, makes hooks executable, wires SessionStart + Stop hooks in settings.json idempotently.
 ---
 
 # Set up the Moodle harness
@@ -39,6 +39,10 @@ for f in \
   ~/.claude/skills/moodle-pluginskel/SKILL.md \
   ~/.claude/skills/moodle-guidelines/SKILL.md \
   ~/.claude/skills/moodle-install/SKILL.md \
+  ~/.claude/skills/moodle-upgrade-audit/SKILL.md \
+  ~/.claude/skills/moodle-upgrade-rehearsal/SKILL.md \
+  ~/.claude/skills/moodle-ai-setup/SKILL.md \
+  ~/.claude/skills/moodle-web/SKILL.md \
   ~/.claude/skills/moodle-install/install.sh \
   ~/.claude/skills/moodle-install/docker-compose.shared.yml \
   ~/.claude/skills/moodle-install/nginx.conf \
@@ -65,41 +69,22 @@ chmod +x ~/.claude/hooks/moodle-detect.sh ~/.claude/hooks/moodle-session-start.s
 
 ## 4. Wire the hooks into settings.json
 
-The fleet harness owns this step now. `~/agents/adapters/claude/install` merges every hook into
-`~/.claude/settings.json` idempotently — the `SessionStart` entry it writes
-(`harness context --json`) already carries everything `moodle-session-start.sh` used to inject,
-so this skill no longer edits `settings.json` itself.
+On a fleet machine (`~/agents` exists) run its adapter first: it merges the fleet hooks, and its
+`SessionStart` wrapper (`harness context --json`) already carries what `moodle-session-start.sh`
+injects.
 
 ```bash
-~/agents/adapters/claude/install    # idempotent; a re-run prints "claude adapter: no changes"
-python3 -c 'import json,os;print(json.dumps(json.load(open(os.path.expanduser("~/.claude/settings.json")))["hooks"],indent=2))'
+[ -x ~/agents/adapters/claude/install ] && ~/agents/adapters/claude/install
+python3 ~/.claude/skills/set-moodle-harness/wire-hooks.py    # idempotent; a re-run prints "no changes"
 ```
 
-Expected: one `SessionStart` entry pointing at `adapters/claude/hooks/session-start.sh`; the
-`Stop` entry still pointing at `~/.claude/hooks/moodle-stop-reminder.sh` (this skill's own,
-untouched); plus the `PostToolUse` audit hook and the `SubagentStart`/`SubagentStop` orbiters.
-Details: `~/agents/adapters/claude/README.md`.
+`wire-hooks.py [settings.json]` merges into `~/.claude/settings.json` (or the given file),
+preserving every other key and hook:
+- `Stop` → `$HOME/.claude/hooks/moodle-stop-reminder.sh`, once.
+- `SessionStart` → `$HOME/.claude/hooks/moodle-session-start.sh`, once, **unless** a fleet
+  `…/session-start.sh` entry exists (no double injection).
 
-On a machine with **no** `~/agents`, wire the two Moodle hooks by hand instead — same merge, one
-entry per event, dropping any prior copy of the same command and preserving every other key:
-
-```bash
-python3 - <<'MERGE'
-import json, os
-p = os.path.expanduser("~/.claude/settings.json")
-data = json.load(open(p)) if os.path.exists(p) else {}
-hooks = data.setdefault("hooks", {})
-def ensure(event, cmd):
-    arr = [g for g in hooks.get(event, [])
-           if not any(h.get("command") == cmd for h in g.get("hooks", []))]
-    arr.append({"hooks": [{"type": "command", "command": cmd}]})
-    hooks[event] = arr
-ensure("SessionStart", "$HOME/.claude/hooks/moodle-session-start.sh")
-ensure("Stop", "$HOME/.claude/hooks/moodle-stop-reminder.sh")
-json.dump(data, open(p, "w"), indent=2)
-print("settings.json wired:", json.dumps(data.get("hooks"), indent=2))
-MERGE
-```
+Fixture test: `bash ~/.claude/skills/set-moodle-harness/tests/wire-hooks.test.sh`.
 
 ## 5. Install moodle-plugin-ci on the host (if missing)
 

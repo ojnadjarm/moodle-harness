@@ -14,6 +14,10 @@ cat > "$FX/bin/git" <<'F'
 #!/usr/bin/env bash
 mkdir -p "${@: -1}" && touch "${@: -1}/version.php"
 F
+cat > "$FX/bin/ss" <<'F'
+#!/usr/bin/env bash
+printf 'LISTEN 0 4096 0.0.0.0:%s 0.0.0.0:*\n' 8045 8046 8445 8446
+F
 chmod +x "$FX/bin/"*
 box=(env PATH="$FX/bin:$PATH" FAKE_OUT="$FX" HOME="$FX" MOODLE_ENVS="$FX/moodle-envs" HARNESS_CONFIG="$FX/none"
     MOODLE_DB_PASSWORD=fixture MOODLE_ADMIN_PASSWORD=fixture
@@ -50,6 +54,9 @@ refused "a root inside 4.5 through a symlink" 5.3 --new-name fresh4
 box[4]="MOODLE_ENVS=$FX/moodle-envs/vass"
 refused "a root inside vass" 5.3 --new-name fresh5
 box[4]="MOODLE_ENVS=$FX/moodle-envs"
+refused "--name 4.5 (the 4.5 dir)" 4.5 --name 4.5
+refused "--name vass2" 4.5 --name vass2
+refused "--name 45 (project moodle45)" 4.5 --name 45
 
 : > "$FX/docker.log"
 "${box[@]}" "$S" 5.3 --new-name t430fresh > "$FX/out" 2>&1; rc=$?
@@ -57,5 +64,15 @@ check "--new-name fresh env installs" '[ "$rc" = 0 ] && grep -qx "name: t430fres
 check "fresh env never names moodle45 or vass" '! grep -Eq "moodle45|vass" "$FX/docker.log"'
 "${box[@]}" "$S" 5.0 > "$FX/out" 2>&1; rc=$?
 check "fresh default env installs" '[ "$rc" = 0 ] && grep -qx "name: moodle50" "$FX/moodle-envs/5.0/docker-compose.yml"'
+: > "$FX/docker.log"
+"${box[@]}" "$S" 4.5 --name lts45 > "$FX/out" 2>&1; rc=$?
+y="$FX/moodle-envs/lts45/docker-compose.yml"
+check "--name lts45 installs as project moodlelts45" '[ "$rc" = 0 ] && grep -qx "name: moodlelts45" "$y"'
+check "--name lts45 skips the Vass and busy ports" 'grep -q "\"8047:80\"" "$y" && grep -q "\"5446:5432\"" "$y"'
+check "--name lts45 never names moodle45 or vass" '! grep -Eq "moodle45|vass" "$FX/docker.log" "$y"'
+check "--name lts45 site is its own port" 'grep -q "wwwroot   = '"'"'http://localhost:8047'"'"';" "$FX/moodle-envs/lts45/www/config.php" && grep -q "^Site: *http://localhost:8047 " "$FX/out"'
+"${box[@]}" "$S" 4.5 --name lts45b > "$FX/out" 2>&1; rc=$?
+y="$FX/moodle-envs/lts45b/docker-compose.yml"
+check "a second --name env skips a stopped env's ports" '[ "$rc" = 0 ] && grep -q "\"8048:80\"" "$y" && grep -q "\"5447:5432\"" "$y"'
 [ "$fail" = 0 ] && echo "guard.test: ok"
 exit "$fail"

@@ -5,6 +5,19 @@
 # Exit: the command's rc; 2 usage or no container.
 set -uo pipefail
 
+usage() {
+    cat <<'EOF'
+usage: mexec <script.php|cmd> [args...]   (run from inside a Moodle code tree)
+  Runs as www-data in dirroot of the container that mounts the cwd; a .php path that
+  exists only under public/ (5.1+) runs from public/.
+Examples:
+  mexec admin/cli/purge_caches.php
+  mexec admin/cli/cfg.php --name=debug --set=32767
+  mexec vendor/bin/phpunit --filter my_test
+Exit: the command's rc; 2 usage or no container.
+EOF
+}
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 [ $# -ge 1 ] || { echo "usage: mexec <script.php|cmd> [args...]  (run from inside a Moodle code tree)" >&2; exit 2; }
 IFS=$'\t' read -r C D < <("$HOME/.claude/hooks/moodle-container.sh" "$PWD") \
     || { echo "mexec: no running Moodle container mounts $PWD (not inside a Moodle code tree, or its env is stopped)" >&2; exit 2; }

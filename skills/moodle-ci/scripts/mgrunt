@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Rebuild one plugin's AMD modules with the node its Moodle root asks for.
+Usage: mgrunt [plugin-dir]   (default: $PWD; the plugin is the nearest version.php above it)
+  Root: the nearest dir above the plugin with Gruntfile.js and package.json (5.1+: above public/).
+  Node: the highest $NVM_DIR/versions/node/v* (default ~/.nvm) matching the root package.json
+    engines.node (comparators >=, >, <=, <, =, ^, ~, x-ranges, joined by spaces and ||).
+  Runs `nice -n 19 npx grunt amd --root=<plugin rel>` in the root with that node first on PATH,
+    then prints each amd/build file it changed.
+Exit: grunt's code; 2 usage / no plugin / no root; 3 no matching node or no <root>/node_modules/.bin/grunt.
+"""
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+
+
+def die(rc, msg):
+    print(f"mgrunt: {msg}", file=sys.stderr)
+    sys.exit(rc)
+
+
+def up(start, test):
+    p = os.path.realpath(start)
+    while p != "/":
+        if test(p):
+            return p
+        p = os.path.dirname(p)
+    return None
+
+
+def ver(s):
+    parts = [int(x) for x in re.findall(r"\d+", s)[:3]]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
+def comparator(tok, v):
+    m = re.fullmatch(r"(>=|<=|>|<|=|\^|~)?v?(\d+|[xX*])(?:\.(\d+|[xX*]))?(?:\.(\d+|[xX*]))?", tok)
+    if not m:
+        die(3, f"cannot read engines.node comparator '{tok}'")
+    op, nums = m.group(1) or "", [g for g in m.groups()[1:] if g is not None and g not in "xX*"]
+    n = len(nums)
+    want = tuple(int(x) for x in nums) + (0,) * (3 - n)
+    if op == "^":
+        k = next((i for i, x in enumerate(want[:n]) if x), max(n - 1, 0)) + 1
+        return v >= want and v[:k] == want[:k]
+    if op == "~":
+        return v >= want and v[:max(min(n, 2), 1)] == want[:max(min(n, 2), 1)]
+    a, b = v[:n], want[:n]
+    return {"": a == b, "=": a == b, ">=": a >= b, "<=": a <= b, ">": a > b, "<": a < b}[op]
+
+
+def satisfies(rng, v):
+    return any(all(comparator(t, v) for t in alt.split()) for alt in rng.split("||") if alt.strip())
+
+
+def snapshot(d):
+    out = {}
+    for r, _, files in os.walk(d):
+        for f in files:
+            p = os.path.join(r, f)
+            out[p] = hashlib.sha1(open(p, "rb").read()).hexdigest()
+    return out
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    if len(args) > 1:
+        die(2, "usage: mgrunt [plugin-dir]")
+    start = args[0] if args else os.getcwd()
+    plugin = up(start, lambda p: os.path.isfile(os.path.join(p, "version.php")))
+    if not plugin:
+        die(2, f"no plugin version.php above {start}")
+    root = up(os.path.dirname(plugin), lambda p: all(
+        os.path.isfile(os.path.join(p, f)) for f in ("Gruntfile.js", "package.json")))
+    if not root:
+        die(2, f"no Moodle root (Gruntfile.js + package.json) above {plugin}")
+    rng = json.load(open(os.path.join(root, "package.json"))).get("engines", {}).get("node", "*").strip() or "*"
+    nvm = os.path.join(os.environ.get("NVM_DIR", os.path.expanduser("~/.nvm")), "versions", "node")
+    found = sorted((ver(d), d) for d in (os.listdir(nvm) if os.path.isdir(nvm) else []) if re.match(r"v\d", d))
+    ok = [d for v, d in found if rng == "*" or satisfies(rng, v)]
+    if not ok:
+        have = " ".join(d for _, d in found) or "none"
+        die(3, f"no node in {nvm} satisfies engines.node '{rng}' (have: {have}); install one: nvm install <version>")
+    nodebin = os.path.join(nvm, ok[-1], "bin")
+    env = dict(os.environ, PATH=nodebin + os.pathsep + os.environ.get("PATH", ""))
+    if not os.path.exists(os.path.join(root, "node_modules", ".bin", "grunt")):
+        die(3, f"no {root}/node_modules/.bin/grunt; run: cd {root} && PATH={nodebin}:$PATH nice -n 19 npm ci")
+    rel = os.path.relpath(plugin, root)
+    print(f"mgrunt: node {ok[-1]} (engines '{rng}'), root {root}, plugin {rel}")
+    build = os.path.join(plugin, "amd", "build")
+    before = snapshot(build)
+    rc = subprocess.call(["nice", "-n", "19", "npx", "grunt", "amd", f"--root={rel}"], cwd=root, env=env)
+    after = snapshot(build)
+    changed = sorted(p for p in after if before.get(p) != after[p])
+    for p in changed:
+        print(f"changed: {os.path.relpath(p, plugin)}")
+    print(f"mgrunt: {len(changed)} amd/build file(s) changed, grunt rc {rc}")
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,305 @@
+#!/usr/bin/env bash
+# Run core_privacy provider_test for one plugin's data sets in its container, plus static table/lang checks.
+# Usage: mprivacy [--static] [plugin-dir]   (default: $PWD; the component is read from version.php)
+#   --static: host checks only, no container.
+#   Static (host): db/install.xml tables missing from get_metadata (FAIL when the table holds user fields),
+#     'privacy:metadata*' ids used in classes/privacy without a lang/en string, request\plugin\provider without
+#     core_userlist_provider (grouped and aliased use imports resolved); WARN for null_provider with user-field tables,
+#     and for a user-field get_metadata table absent from export_user_data or a delete_data_for_* body of class
+#     provider or its plugin traits (as {table} or ->call('table'); own methods, plugin Class::m() and plugin
+#     functions followed 3 calls deep). `// mprivacy:kept <table> <reason>` in classes/privacy turns that table's
+#     export/delete WARN into a KEPT line (data kept on purpose); WARN for a kept table not in get_metadata with user
+#     fields, and for a required export/delete method found in neither the provider nor its plugin traits.
+#   Container: provider_test filtered to data set "<component>", phpunit env inited only when stale (mtest init).
+# Exit: 1 on any FAIL (a static FAIL even with no container) or 0 tests matched; 2 usage, 3 no container. Log path last.
+set -uo pipefail
+
+die() { echo "mprivacy: $2" >&2; exit "$1"; }
+nocont() { die "$((bad ? 1 : 3))" "$1"; }
+usage() { die 2 "usage: mprivacy [--static] [plugin-dir]"; }
+static=0 arg=
+for a in "$@"; do
+    case "$a" in
+        -h|--help) sed -n '2,/^# Exit/s/^# \{0,1\}//p' "$0"; exit 0;;
+        --static) static=1;;
+        -*) usage;;
+        *) [ -z "$arg" ] || usage; arg="$a";;
+    esac
+done
+[ -e "${arg:-$PWD}" ] || die 2 "no such path ${arg}"
+plugin="$(realpath -- "${arg:-$PWD}")" || die 2 "bad path ${arg}"
+while [ "$plugin" != / ] && ! grep -qs '\$plugin->component' "$plugin/version.php"; do plugin="$(dirname "$plugin")"; done
+[ "$plugin" = / ] && die 2 "no plugin version.php above ${arg:-$PWD}"
+comp="$(grep -hoP "\\\$plugin->component\s*=\s*'\K[^']+" "$plugin/version.php")"
+t0=$(date +%s) bad=0
+
+python3 -I - "$plugin" "$comp" <<'PY' || bad=1
+import glob, os, re, sys
+import xml.etree.ElementTree as ET
+plugin, comp = sys.argv[1:3]
+STR = r'"(?:\\.|[^"\\])*"' + "|" + r"'(?:\\.|[^'\\])*'"
+
+def code(path):
+    s = open(path, encoding="utf-8", errors="replace").read()
+    return re.sub(rf"({STR})|/\*.*?\*/|//[^\n]*|#[^\[\n][^\n]*|#$", lambda m: m.group(1) or " ", s, flags=re.S | re.M)
+
+def block(s, i):
+    """Index just past the {...} block opening at s[i], braces inside strings skipped."""
+    depth = 0
+    while i < len(s):
+        c = s[i]
+        if c in "'\"":
+            q = SRE.match(s, i)
+            i = q.end() if q else i + 1; continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if not depth:
+                return i + 1
+        i += 1
+    return len(s)
+
+def functions(s):
+    """Yield (start, name, body) of each function with a body."""
+    for m in re.finditer(r"\bfunction\s+&?\s*(\w+)\s*\(", s):
+        j = m.end()
+        while j < len(s) and s[j] not in "{;":
+            q = SRE.match(s, j) if s[j] in "'\"" else None
+            j = q.end() if q else j + 1
+        if j < len(s) and s[j] == "{":
+            yield m.start(), m.group(1), s[j:block(s, j)]
+
+def imports(s):
+    """(namespace, {lower-cased alias: FQN}) of a file's top-level use imports, grouped and aliased ones expanded."""
+    ns = re.search(r"\bnamespace\s+([\w\\]+)\s*;", s)
+    ns, alias = ns.group(1) if ns else "", {}
+    bodies = [(m.end(), block(s, m.end() - 1)) for m in re.finditer(r"(?<!::)\b(?:class|trait|interface|enum)\s+\w+[^{;]*\{", s)]
+    for m in re.finditer(r"(?:^|(?<=[;{}]))\s*use\s+(?!function\b|const\b)([^;(]+);", s, re.M):
+        if any(a <= m.start() < b for a, b in bodies):
+            continue
+        g = re.match(r"\s*\\?([\w\\]+?)\\?\{(.*)\}\s*$", m.group(1), re.S)
+        items = [g.group(1) + "\\" + x.strip() for x in g.group(2).split(",")] if g else m.group(1).split(",")
+        for it in items:
+            p = re.match(r"\s*\\?([\w\\]+)(?:\s+as\s+(\w+))?\s*$", it)
+            if p:
+                alias[(p.group(2) or p.group(1).rsplit("\\", 1)[-1]).lower()] = p.group(1)
+    return ns, alias
+
+def fqn(ns, alias, n):
+    """Lower-cased FQN of class name n as written under namespace ns with imports alias."""
+    n = n.strip()
+    head, _, rest = n.partition("\\")
+    if n.startswith("\\"):
+        n = n[1:]
+    elif head.lower() in alias:
+        n = alias[head.lower()] + ("\\" + rest if rest else "")
+    elif ns:
+        n = ns + "\\" + n
+    return n.lower()
+
+def implemented(s):
+    """Lower-cased FQNs in the implements list of class provider."""
+    m = re.search(r"\bclass\s+provider\b[^{]*?\bimplements\s+([^{]+)\{", s)
+    return {fqn(*imports(s), n) for n in (m.group(1).split(",") if m else [])}
+
+SRE = re.compile(STR)
+pfiles = sorted(glob.glob(f"{plugin}/classes/privacy/**/*.php", recursive=True))
+pfile = f"{plugin}/classes/privacy/provider.php"
+src = "".join(code(f) for f in pfiles)
+raw = "".join(open(f, encoding="utf-8").read() for f in pfiles)
+bad = 0
+langfile = f"{plugin}/lang/en/{comp[4:] if comp.startswith('mod_') else comp}.php"
+lang = open(langfile, encoding="utf-8").read() if os.path.exists(langfile) else ""
+ids = sorted(i for i in set(re.findall(r"""['"](privacy:metadata[^'"]*)['"]""", raw)) if not re.search(r":$|\$", i))
+missing = [i for i in ids if not re.search(r"""\$string\[\s*['"]%s['"]\s*\]""" % re.escape(i), lang)]
+for i in missing:
+    print(f"FAIL lang       '{i}' not in lang/en"); bad = 1
+if not missing:
+    print(f"PASS lang       {len(ids)} privacy:metadata ids defined")
+meta = set(re.findall(r"""add_database_table\(\s*['"]([a-z0-9_]+)['"]""", src))
+tables = []
+if os.path.exists(f"{plugin}/db/install.xml"):
+    tables = list(ET.parse(f"{plugin}/db/install.xml").getroot().iter("TABLE"))
+n = tbad = 0
+usertables = []
+for t in tables:
+    n += 1
+    name = t.get("NAME")
+    user = any(f.get("NAME") == "userid" for f in t.iter("FIELD")) or any(
+        k.get("REFTABLE") == "user" and k.get("REFFIELDS") == "id" for k in t.iter("KEY"))
+    if user:
+        usertables.append(name)
+    if name in meta:
+        continue
+    if user:
+        print(f"FAIL tables     {name} has user fields, not in get_metadata"); tbad = 1
+    else:
+        print(f"WARN tables     {name} not in get_metadata (no user fields)")
+if n and not tbad:
+    print(f"PASS tables     {n} declared, user-field tables all in get_metadata")
+
+if re.search(r"\bnull_provider\b", src) and usertables:
+    print(f"WARN null       null_provider but user-field tables: {', '.join(usertables)}")
+impl = implemented(code(pfile)) if os.path.exists(pfile) else set()
+if "core_privacy\\local\\request\\plugin\\provider" in impl:
+    if "core_privacy\\local\\request\\core_userlist_provider" in impl:
+        print("PASS userlist   request\\plugin\\provider with core_userlist_provider")
+    else:
+        print("FAIL userlist   request\\plugin\\provider without core_userlist_provider"); tbad = 1
+
+methods, byfqn, traits, free, files, consts = {}, {}, {}, {}, {}, {}
+for f in sorted(glob.glob(f"{plugin}/**/*.php", recursive=True)):
+    if "/tests/" in f[len(plugin):]:
+        continue
+    s = code(f)
+    files[f] = imports(s)
+    spans = [(m.start(), block(s, m.end() - 1), m.group(1)) for m in
+             re.finditer(r"(?<!::)\b(?:class|trait|interface|enum)\s+(\w+)[^{;]*\{", s)]
+    for a, b, name in spans:
+        byfqn.setdefault(fqn(files[f][0], {}, name), set()).add((f, name))
+        c = re.search(r"\bconst\s+TABLE\s*=\s*['\"](\w+)['\"]", s[a:b])
+        if c:
+            consts[(f, name)] = c.group(1)
+        for m in re.finditer(r"(?:^|(?<=[;{}]))\s*use\s+([\w\\][\w\\\s,]*?)\s*[;{]", s[a:b], re.M):
+            traits.setdefault((f, name), []).extend(fqn(*files[f], t) for t in m.group(1).split(","))
+    for start, name, body in functions(s):
+        owner = max(((a, c) for a, b, c in spans if a < start < b), default=None)
+        if owner:
+            methods.setdefault((f, owner[1]), {}).setdefault(name, body)
+        else:
+            free.setdefault(name.lower(), []).append((None, f, body))
+
+def lookup(key, name):
+    """(file, body) of method name on class key or a plugin trait it uses, else None."""
+    todo, seen = [key], set()
+    while todo:
+        k = todo.pop(0)
+        if k in seen:
+            continue
+        seen.add(k)
+        if name in methods.get(k, {}):
+            return k[0], methods[k][name]
+        todo += [x for t in traits.get(k, ()) for x in sorted(byfqn.get(t, ()))]
+    return None
+
+def calls(f, key, body):
+    """(class key or None, name) of each call in body: own methods, plugin Class::m(), new Class(), bare f()."""
+    for m in re.finditer(r"(?:\$this\s*->|\b(?:self|static)\s*::)\s*(\w+)\s*\(", body):
+        if key:
+            yield key, m.group(1)
+    for m in re.finditer(r"(?<![\w\\$])(\\?\w[\w\\]*)\s*::\s*(\w+)\s*\(", body):
+        if m.group(1).lower() not in ("self", "static", "parent"):
+            for k in sorted(byfqn.get(fqn(*files[f], m.group(1)), ())):
+                yield k, m.group(2)
+    for m in re.finditer(r"\bnew\s+(\\?\w[\w\\]*)\s*\(", body):
+        for k in sorted(byfqn.get(fqn(*files[f], m.group(1)), ())):
+            yield k, "__construct"
+    for m in re.finditer(r"(?<![\w$>:\\])(\w+)\s*\(", body):
+        yield None, m.group(1).lower()
+
+def reach(key, f, body, depth=3):
+    """The body plus the bodies of plugin functions and methods it calls, depth levels deep; persistent TABLE as {t}."""
+    seen, todo, out = set(), [(key, f, body)], [body]
+    for _ in range(depth):
+        nxt = []
+        for k, kf, b in todo:
+            for c in calls(kf, k, b):
+                if c in seen:
+                    continue
+                seen.add(c)
+                if c[0] in consts:
+                    out.append("{%s}" % consts[c[0]])
+                if c[0] is None:
+                    nxt += free.get(c[1], [])
+                else:
+                    hit = lookup(*c)
+                    nxt += [(c[0], *hit)] if hit else []
+        out += [b for _, _, b in nxt]; todo = nxt
+    return "".join(out)
+
+kept = {m.group(1): m.group(2).strip() for m in
+        re.finditer(r"mprivacy:kept\s+([a-z0-9_]+)[ \t]*([^\n*]*)", raw)}
+pkey = (pfile, "provider")
+checked = [t for t in usertables if t in meta]
+for t in sorted(set(kept) - set(checked)):
+    print(f"WARN kept       {t} in mprivacy:kept is not a user-field table in get_metadata")
+req = "core_privacy\\local\\request\\"
+need = {"export_user_data", "delete_data_for_user", "delete_data_for_all_users_in_context"} if impl & {
+    req + "plugin\\provider", req + "subsystem\\provider", req + "core_user_data_provider"} else set()
+need |= {"delete_data_for_users"} if req + "core_userlist_provider" in impl else set()
+for label, names in (("export", ["export_user_data"]),
+                     ("delete", ["delete_data_for_user", "delete_data_for_all_users_in_context", "delete_data_for_users"])):
+    present = [(m, lookup(pkey, m)) for m in names]
+    for m, hit in present:
+        if not hit and m in need and checked:
+            print(f"WARN {label:<10} {m} not found in provider or its plugin traits")
+    present = [(m, hit) for m, hit in present if hit]
+    if not present or not checked:
+        continue
+    lbad = 0
+    for m, hit in present:
+        text = reach(pkey, *hit)
+        for t in checked:
+            if re.search(r"""\{%s\}|->\w+\(\s*['"]%s['"]""" % (re.escape(t), re.escape(t)), text):
+                continue
+            lbad = 1
+            if t in kept:
+                print(f"KEPT {label:<10} {t} not in {m}: {kept[t] or 'kept on purpose'}")
+            else:
+                print(f"WARN {label:<10} {t} has user fields, not in {m}")
+    if not lbad:
+        print(f"PASS {label:<10} {len(checked)} user-field tables in {', '.join(m for m, _ in present)}")
+sys.exit(bad or tbad)
+PY
+[ "$static" = 1 ] && { echo "mprivacy: $comp static $([ "$bad" = 0 ] && echo ok || echo red)"; exit "$bad"; }
+
+hostroot="$plugin"
+until [ -f "$hostroot/vendor/bin/phpunit" ] || { [ -f "$hostroot/config.php" ] && [ -d "$hostroot/vendor" ]; }; do
+    [ "$hostroot" = / ] && nocont "no Moodle root (vendor/) above $plugin"
+    hostroot="$(dirname "$hostroot")"
+done
+IFS=$'\t' read -r C D < <("$HOME/.claude/hooks/moodle-container.sh" "$hostroot") || nocont "no running container mounts $hostroot; start the env"
+test="public/privacy/tests/privacy/provider_test.php"
+[ -f "$hostroot/$test" ] || test="privacy/tests/provider_test.php"
+[ -f "$hostroot/$test" ] || nocont "no core privacy provider_test.php under $hostroot"
+
+log="$(mktemp "${TMPDIR:-/tmp}/mprivacy-XXXX.log")"
+trap 'rm -f "$log.init" "$log.xml"' EXIT
+"$(dirname "$0")/mtest" init phpunit "$plugin" >"$log.init" 2>&1 || { cp "$log.init" "$log"; tail -5 "$log"; die 1 "init failed, log $log"; }
+grep -q 'init in' "$log.init" && tail -1 "$log.init"
+junit="/tmp/mprivacy-$comp.xml"
+docker exec "$C" bash -c "cd '$D' && vendor/bin/phpunit --log-junit '$junit' '$test' --filter '@$comp'" >"$log" 2>&1
+rc=$?
+docker exec "$C" bash -c "cat '$junit' 2>/dev/null; rm -f '$junit'" >"$log.xml"
+
+python3 -I - "$log.xml" <<'PY' || bad=1
+import sys
+import xml.etree.ElementTree as ET
+names = {"test_null_provider": "null", "test_all_providers_compliant": "compliant",
+         "test_metadata_provider": "metadata", "test_userdata_provider_implements_userlist": "userlist",
+         "test_table_coverage": "table coverage"}
+try:
+    cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
+except (ET.ParseError, OSError):
+    cases = []
+seen, bad = {}, 0
+for c in cases:
+    seen[c.get("name", "").split(" ")[0]] = c
+for m, label in names.items():
+    c = seen.get(m)
+    if c is None:
+        print(f"n/a  {label:<14} not applicable to this provider"); continue
+    err = c.find("failure") if c.find("failure") is not None else c.find("error")
+    if err is not None:
+        msg = (err.text or err.get("message") or "").strip().splitlines()
+        print(f"FAIL {label:<14} {msg[0] if msg else ''}"); bad = 1
+    else:
+        print(f"PASS {label}")
+if not cases:
+    print("FAIL tests          0 provider_test data sets matched"); bad = 1
+sys.exit(bad)
+PY
+[ "$rc" = 0 ] || bad=1
+echo "mprivacy: $comp $([ "$bad" = 0 ] && echo ok || echo red) (phpunit rc=$rc) in $(( $(date +%s) - t0 ))s; full log $log"
+exit "$bad"

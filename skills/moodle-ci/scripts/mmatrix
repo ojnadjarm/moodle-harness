@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Run one plugin through `mci quick` on every running dev Moodle env, one env at a time under nice -n 19.
+# Usage: mmatrix [plugin-dir] [--envs 5.2,5.3] [--plan]   (default: $PWD; every env under $MFIXTURE_ENVS
+#   (~/moodle-envs) whose www a running container mounts). 4.5*/vass* envs are never touched.
+#   Per env: `mfixture with <env> <plugin> -- mci quick <installed copy>` (in place when the plugin already
+#   lives in that env); envs older than $plugin->requires are a named SKIP. Prints one table; per-env logs
+#   live in the plugin's log home (scripts/mlog).
+#   --plan runs nothing: one row per branch from requires to supported (mci-workflow's range): PHP floor,
+#   env (the first env whose version.php $branch is that branch, never 4.5*/vass*; none/refused), up/down, seconds of the newest mmatrix log there or direct `mci quick` log of a
+#   plugin living in that env, action (run/start env/CI only); --envs limits the rows (a branch outside the range: rc 2).
+# Exit: 1 if any env is red, else 0; 2 usage; 3 a refused env.
+set -uo pipefail
+
+ME="$(realpath "$0")" S="$(dirname "$ME")"
+. "$S/mlog"
+die() { echo "mmatrix: $2" >&2; exit "$1"; }
+ENVS="${MFIXTURE_ENVS:-$HOME/moodle-envs}"
+
+# Inner step, run by mfixture while the fixture is installed: mci quick on the installed copy.
+if [ "${1:-}" = --installed ]; then
+    root="$2" comp="$3"
+    dir="$(find "$root" -maxdepth 7 \( -name vendor -o -name node_modules -o -name .git \) -prune \
+        -o -path "*/${comp#*_}/version.php" -print | xargs -r grep -lP "\\\$plugin->component\s*=\s*'$comp'" | head -1)"
+    [ -n "$dir" ] || die 1 "installed $comp not found under $root"
+    exec "$S/mci" quick "$(dirname "$dir")"
+fi
+
+target="$PWD" want="" plan=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --envs) want="${2:-}"; shift 2 || shift;;
+        --envs=*) want="${1#*=}"; shift;;
+        --plan) plan=1; shift;;
+        -h|--help) sed -n '2,/^# Exit/s/^# \{0,1\}//p' "$0"; exit 0;;
+        -*) die 2 "usage: mmatrix [plugin-dir] [--envs 5.2,5.3] [--plan]";;
+        *) target="$1"; shift;;
+    esac
+done
+plugin="$(realpath -e "$target" 2>/dev/null)" || die 2 "no such dir: $target"
+comp="$(mlog_component "$plugin")"; [ -n "$comp" ] || die 2 "no \$plugin->component in $plugin/version.php"
+requires="$(grep -hoP '\$plugin->requires\s*=\s*\K[0-9]+' "$plugin/version.php")"
+
+refused() { case "${1,,}" in 4.5*|*vass*) return 0;; esac; return 1; }
+
+# envfor <x.y>: the first non-refused env dir whose www version.php $branch is that branch.
+envfor() {
+    local b w r
+    b="$(printf '%d%02d' "${1%%.*}" "${1#*.}")"
+    for w in "$ENVS"/*/www; do
+        refused "$(basename "$(dirname "$w")")" && continue
+        r="$(realpath -e "$w")" || continue
+        case "${r,,}" in */4.5*|*vass*) continue;; esac
+        [ "$(cat "$r/public/version.php" "$r/version.php" 2>/dev/null |
+            grep -hoP "^\\\$branch\s*=\s*'\K[0-9]+" | head -1)" = "$b" ] && { dirname "$w"; return; }
+    done
+}
+
+# Sum of the sec column of the newest `mci quick` table in mmatrix-<env>-*.log (or a direct mci-*.log when the
+# plugin lives in env $2's www; mci logs named by an mmatrix log ran on its env), else -.
+lastsec() {
+    local f s d ran; d="$(mlog_dir "$comp")"
+    ran="$(cat "$d"/mmatrix-*.log 2>/dev/null | grep -oP '^mci: quick .*; logs \K\S+')"
+    for f in $(ls -1t "$d"/mmatrix-"$1"-*.log $([[ "$plugin/" == "$2/"* ]] && echo "$d"/mci-*.log) 2>/dev/null); do
+        [[ "${f##*/}" != mci-* ]] || { grep -q '^mci: quick ' "$f" && ! grep -qxF "$f" <<<"$ran"; } || continue
+        s="$(awk '$1 == "step" && $3 == "sec" { t = 0; h = 1; next } h && $3 ~ /^[0-9]+$/ { t += $3 }
+                  END { if (h) print t }' "$f")"
+        [ -n "$s" ] && { echo "$s"; return; }
+    done
+    echo -
+}
+
+if [ -n "$plan" ]; then
+    bl="$(python3 -B -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("mciwf", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("mciwf", loader))
+loader.exec_module(m)
+for r in m.branches(sys.argv[2], m.install_table()):
+    if r["ver"] not in m.PHP_MIN:
+        sys.exit("mmatrix: no PHP floor for " + r["ver"] + " in mci-workflow")
+    print(r["ver"], m.PHP_MIN[r["ver"]])
+' "$S/mci-workflow" "$plugin/version.php")" || exit 2
+    for v in ${want//,/ }; do
+        grep -q "^$v " <<<"$bl" || die 2 "no branch $v in $(head -1 <<<"$bl" | cut -d' ' -f1)..$(tail -1 <<<"$bl" | cut -d' ' -f1) (requires..supported)"
+    done
+    printf '%-6s %-4s %-28s %-5s %4s  %s\n' branch php env state sec action
+    while read -r v php; do
+        [ -n "$want" ] && [[ ",$want," != *",$v,"* ]] && continue
+        env="$(envfor "$v")" state=- sec=- act="no env: CI only via mci-workflow"
+        if [ -z "$env" ]; then refused "$v" && env=refused || env=none
+        else
+            sec="$(lastsec "$v" "$(realpath -e "$env/www")")"
+            if "$HOME/.claude/hooks/moodle-container.sh" "$(realpath -e "$env/www")" >/dev/null 2>&1; then state=up act=run
+            else state=down act="start env"; fi
+        fi
+        printf '%-6s %-4s %-28s %-5s %4s  %s\n' "$v" "$php" "$env" "$state" "$sec" "$act"
+    done <<<"$bl"
+    exit 0
+fi
+envs=()
+if [ -n "$want" ]; then
+    IFS=, read -ra envs <<<"$want"
+    for e in "${envs[@]}"; do refused "$e" && die 3 "refused env $e (4.5/vass are never touched)"; done
+else
+    for w in "$ENVS"/*/www; do
+        e="$(basename "$(dirname "$w")")"
+        refused "$e" && continue
+        r="$(realpath -e "$w")" || continue
+        case "${r,,}" in */4.5*|*vass*) continue;; esac
+        "$HOME/.claude/hooks/moodle-container.sh" "$r" >/dev/null 2>&1 && envs+=("$e")
+    done
+fi
+[ ${#envs[@]} -gt 0 ] || die 2 "no running env under $ENVS"
+
+pid=""
+trap '[ -n "$pid" ] && kill -TERM -- "-$pid" 2>/dev/null && wait "$pid"; exit 130' INT TERM
+
+envver() { cat "$1/public/version.php" "$1/version.php" 2>/dev/null | grep -hoP '^\$version\s*=\s*\K[0-9]+' | head -1; }
+step() { awk -v s="$1" '$1 == s { v = $2 } END { print (v == "" ? "-" : v) }' "$2"; }
+
+rows=() red=0
+for e in "${envs[@]}"; do
+    root="$(realpath -m "$ENVS/$e/www")" note="" t0=$(date +%s) cc=- pu=-
+    ver="$(envver "$root")"
+    if [ -n "$requires" ] && [ -n "$ver" ] && [ "$ver" -lt "$requires" ]; then
+        rc=SKIP cc=SKIP pu=SKIP note="needs $requires, env has $ver"
+    else
+        log="$(mlog_new "mmatrix-$e" "$comp")" || die 1 "cannot create a log in $(mlog_dir "$comp")"
+        if [[ "$plugin/" == "$root/"* ]]; then
+            note="in place"; setsid nice -n 19 "$S/mci" quick "$plugin" >"$log" 2>&1 &
+        else
+            setsid nice -n 19 "$S/mfixture" with "$e" "$plugin" -- "$ME" --installed "$root" "$comp" >"$log" 2>&1 &
+        fi
+        pid=$!; wait "$pid"; rc=$?; pid=""
+        cc="$(step codechecker "$log")" pu="$(step phpunit "$log")"
+        if [ "$rc" != 0 ]; then
+            red=$((red + 1)); note="log $log"
+            echo "== $e rc=$rc: last lines of $log"; tail -n 20 "$log"
+        fi
+    fi
+    rows+=("$(printf '%-6s %-11s %-7s %4s  %s' "$e" "$cc" "$pu" "$(( $(date +%s) - t0 ))" "$note")")
+done
+
+printf '%-6s %-11s %-7s %4s  %s\n' env codechecker phpunit sec note
+printf '%s\n' "${rows[@]}"
+echo "mmatrix: $comp on ${#envs[@]} envs, $red red; logs $(mlog_dir "$comp")"
+[ "$red" = 0 ]

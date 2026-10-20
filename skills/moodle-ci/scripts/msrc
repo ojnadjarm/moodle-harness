@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Print a read-only Moodle code root for a branch (X.Y) or a $plugin->requires version.
+Usage: msrc <X.Y|requires> [--fetch]
+  Reuses a ~/moodle-envs env whose version.php $branch matches (never 4.5 or vass), else
+  ${XDG_CACHE_HOME:-~/.cache}/moodle-harness/src/MOODLE_<XYY>_STABLE.
+  --fetch  git clone --depth 1 that branch into the cache (nice -n 19) when no tree is found.
+Env: MOODLE_ENVS overrides ~/moodle-envs (tests).
+Exit: 0 printed, 1 clone failed, 2 usage / unknown branch, 3 no tree (run with --fetch),
+  130/143 interrupted by INT/TERM (the partial clone is removed).
+"""
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "moodle-pluginskel"))
+from generate import REQUIRES  # noqa: E402
+
+REMOTE = "https://github.com/moodle/moodle.git"
+REFUSED = re.compile(r"^4\.5$|vass")
+BRANCH = re.compile(r"^\$branch\s*=\s*'(\d+)';", re.M)
+
+
+def die(rc, msg):
+    print(f"msrc: {msg}", file=sys.stderr)
+    sys.exit(rc)
+
+
+def stop(signum, _frame):
+    """Exit 128+signum so the clone's finally removes its partial dir."""
+    sys.exit(128 + signum)
+
+
+def branch_of(arg):
+    """X.Y for a branch name or the newest branch whose requires is <= a version number."""
+    if arg in REQUIRES:
+        return arg
+    if re.fullmatch(r"\d{10}(\.\d+)?", arg):
+        known = [b for b, v in REQUIRES.items() if v <= float(arg)]
+        if known:
+            return max(known, key=lambda b: tuple(map(int, b.split("."))))
+    die(2, f"unknown branch '{arg}': use one of {', '.join(REQUIRES)} or a requires version")
+
+
+def code_root(base, code):
+    """Root under base (public/ first) whose version.php has $branch code and lib/classes, else None."""
+    for root in (base / "public", base):
+        vphp = root / "version.php"
+        if vphp.is_file():
+            m = BRANCH.search(vphp.read_text(errors="replace"))
+            return root if m and m.group(1) == code and (root / "lib/classes").is_dir() else None
+    return None
+
+
+def main():
+    args = [a for a in sys.argv[1:] if a != "--fetch"]
+    if len(args) != 1 or args[0] in ("-h", "--help"):
+        print(__doc__, end="")
+        sys.exit(0 if args[:1] in (["-h"], ["--help"]) else 2)
+    branch = branch_of(args[0])
+    major, minor = branch.split(".")
+    code = f"{major}{int(minor):02d}"
+    envs = Path(os.environ.get("MOODLE_ENVS") or Path.home() / "moodle-envs")
+    for env in sorted(envs.iterdir()) if envs.is_dir() else []:
+        if env.is_dir() and not REFUSED.search(env.name):
+            root = code_root(env / "www", code)
+            if root:
+                print(root)
+                return
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "moodle-harness/src"
+    tree = cache / f"MOODLE_{code}_STABLE"
+    root = code_root(tree, code)
+    if not root and "--fetch" not in sys.argv[1:]:
+        die(3, f"no {branch} tree in {envs} or {tree}: run msrc {branch} --fetch")
+    if not root:
+        if tree.exists():
+            die(1, f"{tree} exists but is not a {branch} tree: remove it and fetch again")
+        cache.mkdir(parents=True, exist_ok=True)
+        part = cache / f"{tree.name}.partial-{os.getpid()}"
+        signal.signal(signal.SIGINT, stop)
+        signal.signal(signal.SIGTERM, stop)
+        try:
+            rc = subprocess.run(["nice", "-n", "19", "git", "clone", "-q", "--depth", "1", "--branch", tree.name,
+                                 REMOTE, str(part)]).returncode
+            if rc == 0:
+                part.rename(tree)
+        finally:
+            shutil.rmtree(part, ignore_errors=True)
+        root = code_root(tree, code)
+        if rc or not root:
+            die(1, f"git clone of {tree.name} failed (rc {rc})" if rc else f"{tree} has no {branch} version.php")
+    print(root)
+
+
+if __name__ == "__main__":
+    main()
