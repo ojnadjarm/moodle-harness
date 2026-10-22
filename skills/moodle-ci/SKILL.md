@@ -36,6 +36,8 @@ composer or phpcs**; those live on the **host** and survive container rebuilds. 
 - `$S/mtest behat [plugin-dir|file.feature|dir] [--tags X] [args]` — same for Behat (init when
   stale or not enabled; default target `<plugin>/tests/behat`). `--parallel N` splits features over N
   sites (cap 8 minus busy Selenium sessions; 6 features: 2.4× faster at N=6).
+  The shared Selenium is stopped after 2 h idle (`selenium-idle.timer`); `mtest behat` runs
+  `docker start moodle-shared-selenium-1` itself when it is exited (by hand: the same command).
 - `$S/mtest init phpunit|behat [plugin-dir]` — only the init (niced, only when stale), prints seconds.
 - `$S/mphpcompat [plugin-dir] [--php X.Y]` — PHPCompatibility against the minimum PHP of `requires`
   (4.1 = 7.4 … 5.2 = 8.3); `file:line message`, exit 1 on any error, SKIP rc 3 when not installable.

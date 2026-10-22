@@ -14,6 +14,7 @@
 #     A Moodle root (no plugin) takes init or --reset only.
 #   --parallel N (behat): N sites via init.php --parallel, features round-robin over them; N is capped by
 #     MTEST_SELENIUM_CAP (default 8) minus busy sessions on MTEST_SELENIUM (default http://localhost:4444/wd/hub).
+#   behat: an exited moodle-shared-selenium-1 (idle stop) is started first and awaited on MTEST_SELENIUM/status.
 #   Logs: one home per plugin component (scripts/mlog), pruned to 7 days / 50 runs.
 # Exit: the runner's exit code (1 when phpunit ran no tests); 2 usage, 3 no container. Full log path is printed last.
 set -uo pipefail
@@ -102,6 +103,11 @@ dx() { docker exec "$C" bash -c "cd '$D' && $1"; }
 log="$(mlog_new "mtest-$mode" "$comp")" || die 1 "cannot create a log in $(mlog_dir "$comp")"
 t0=$(date +%s)
 
+if [ "$mode" = behat ] && [ "$(docker inspect -f '{{.State.Status}}' moodle-shared-selenium-1 2>/dev/null)" = exited ]; then
+    docker start moodle-shared-selenium-1 >/dev/null || die 1 "cannot start moodle-shared-selenium-1"
+    curl -s -o /dev/null -m 2 --retry 30 --retry-delay 1 --retry-connrefused "${MTEST_SELENIUM:-http://localhost:4444/wd/hub}/status"
+    echo "mtest: started moodle-shared-selenium-1 (was idle-stopped)"
+fi
 [ "$mode" = behat ] && mapfile -t feats < <(find "$target" -name '*.feature' | sort)
 if [ "$mode" = behat ] && [ "$par" -gt 1 ]; then
     busy="$(curl -s -m 3 "${MTEST_SELENIUM:-http://localhost:4444/wd/hub}/sessions" | grep -o '"id"' | wc -l)"

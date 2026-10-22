@@ -12,6 +12,7 @@ printf '#!/bin/sh\nprintf "c1\\t/var/www/html\\n"\n' > "$T/home/.claude/hooks/mo
 cat > "$T/bin/docker" <<'EOF'
 #!/bin/bash
 c="${*: -1}"; echo "$c" >> "$LOGF"; cat >/dev/null 2>&1 <&0 &
+case "$1" in inspect) echo "${SEL:-running}"; exit 0;; start) echo "start $2" >> "$LOGF"; exit 0;; esac
 case "$c" in
     *behat_dataroot*) echo /var/www/behatdata/behatrun;;
     *run_environment.json*parallel*\?\?\ 0\)\;*) echo "${ENVPAR:-0}";;
@@ -29,6 +30,11 @@ check() { if eval "$1"; then echo "PASS $2"; else echo "FAIL $2"; bad=1; fi; }
 
 "$M" --help | grep -q -- --parallel; check '[ $? = 0 ]' "--help documents --parallel"
 args=(--parallel 0); run >/dev/null; check '[ $? = 2 ]' "--parallel 0 is a usage error"
+
+args=(); out="$(run SEL=exited READY=1)"
+check 'grep -qx "start moodle-shared-selenium-1" "$T/log" && grep -q "started moodle-shared-selenium-1" <<<"$out"' "exited selenium is started before behat"
+args=(); run SEL=running READY=1 >/dev/null
+check '! grep -q "^start" "$T/log"' "running selenium is left alone"
 
 args=(--parallel 6); out="$(run BUSY='{"id":"a"},{"id":"b"},{"id":"c"},{"id":"d"},{"id":"e"},{"id":"f"}' MTEST_SELENIUM_CAP=8)"
 check 'grep -q "parallel 6 -> 2 (selenium cap 8, 6 busy, 4 features)" <<<"$out"' "busy hub sessions cap N"
