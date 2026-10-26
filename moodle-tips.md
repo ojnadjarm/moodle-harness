@@ -210,3 +210,7 @@ symptom that matches one of these.
   wait (`$S/mfixture status 5.2`), never reinstall.
 - **A helper's test goes red mid-wave** — a helper it imports is mid-edit by another ticket;
   `claims check <imported files>` and re-run once they are free.
+- **Your plugin deploy went back a version** — another ticket synced its copy of the same plugin
+  over yours (last sync wins; T1394 put 2026102614 over T1393's 2026102613). Deploy only committed HEAD;
+  read the live version first (`$S/mdb --env 5.2 "select value from {config_plugins} where plugin = ? and name = 'version'" local_x`),
+  bump past it, upgrade, read it back (T1405).
