@@ -32,7 +32,7 @@ j="$(run "$T/plugin" | head -1)"
 check "$(jq -r .decision <<<"$j" 2>/dev/null)" "block" "PHP changed, no CI log: decision block"
 ms=$(( ($(date +%s%N) - t0) / 1000000 ))
 check "$([ "$ms" -lt 500 ] && echo fast)" "fast" "runtime ${ms} ms < 500"
-check "$(jq -r '.reason | contains("mci quick: code checker, compat, PHPUnit") and (contains("phpcs + PHPUnit") | not) | tostring' <<<"$j" 2>/dev/null)" "true" "reason names mci quick"
+check "$(jq -r '.reason | contains("mci auto: the checks the change class needs") and (contains("PHPUnit") | not) | tostring' <<<"$j" 2>/dev/null)" "true" "reason names mci auto"
 check "$(run "$T/plugin")" "rc=0" "same diff hash: silent"
 echo '<?php // y' >> "$T/plugin/version.php"
 check "$(blocked "$T/plugin")" "block" "new diff hash: blocks again"
@@ -65,6 +65,8 @@ echo '<?php // b' >> "$T/core/local/b/version.php"
 newlog local_a mci-20261020-000001-abcd.log
 j="$(run "$T/core" | head -1)"
 check "$(jq -r '.decision + " " + (.reason | contains("local_b") and (contains("local_a") | not) | tostring)' <<<"$j" 2>/dev/null)" "block true" "core root: A's run does not silence a B change"
+mkdir -p "$T/del/lang/en" "$T/del/templates"; echo "<?php \$string['a'] = 'A';" > "$T/del/lang/en/local_d.php"; echo '<?php' > "$T/del/templates/t.php"
+check "$(run "$T/del")" "rc=0" "lang/** and templates/** PHP only: silent (T1399)"
 rm "$T/del/classes/one.php"
 check "$(blocked "$T/del")" "block" "deletion-only diff: blocks"
 rm "$T/del/classes/two.php"; newlog local_d mtest-phpunit-20261020-000000-abcd.log

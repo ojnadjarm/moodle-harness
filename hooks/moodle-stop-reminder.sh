@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Stop hook: block once per PHP diff in a Moodle project until each changed component's mtest/mci log is newer than its change.
+# Stop hook: block once per PHP diff in a Moodle project until each changed component's mtest/mci log is newer than its change;
+# lang/** and templates/** files never demand it (T1399: mci auto runs their class's checks).
 
 grep -q '"stop_hook_active" *: *true' && exit 0
 
@@ -11,10 +12,10 @@ cd "$root" 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
 export GIT_OPTIONAL_LOCKS=0
 
 base="$(git rev-parse -q --verify HEAD || git hash-object -t tree /dev/null)"
-mapfile -t files < <(git diff --name-only --relative "$base" -- '*.php'; git ls-files -o --exclude-standard -- '*.php')
+mapfile -t files < <({ git diff --name-only --relative "$base" -- '*.php'; git ls-files -o --exclude-standard -- '*.php'; } | grep -Ev '(^|/)(lang|templates)/')
 [ "${#files[@]}" -gt 0 ] || exit 0
 
-hash="$({ git diff --relative "$base" -- '*.php'; git ls-files -o --exclude-standard -z -- '*.php' | xargs -0 -r git hash-object --; } | sha1sum | cut -c1-40)"
+hash="$({ git diff --relative "$base" -- "${files[@]}"; for f in "${files[@]}"; do [ -f "$f" ] && printf '%s\n' "$f"; done | git hash-object --stdin-paths; } | sha1sum | cut -c1-40)"
 stamp="${XDG_STATE_HOME:-$HOME/.local/state}/moodle-harness/stop-reminder/$(printf '%s' "$root" | sha1sum | cut -c1-12)"
 [ "$(cat "$stamp" 2>/dev/null)" = "$hash" ] && exit 0
 
@@ -57,7 +58,7 @@ mkdir -p "$(dirname "$stamp")" && printf '%s\n' "$hash" > "$stamp"
 python3 -c '
 import json, sys
 root, comps, mlog = sys.argv[1:4]
-r = "PHP changed in %s%s and no mtest/mci run since: run /moodle-ci (mci quick: code checker, compat, PHPUnit) before wrapping up, or say why it is skipped." % (root, " (" + comps + ")" if comps else "")
+r = "PHP changed in %s%s and no mtest/mci run since: run /moodle-ci (mci auto: the checks the change class needs) before wrapping up, or say why it is skipped." % (root, " (" + comps + ")" if comps else "")
 if mlog:
     r += " The log check is off: %s is missing." % mlog
 print(json.dumps({"decision": "block", "reason": r}))' "$root" "$(IFS=,; printf '%s' "${stale[*]}" | sed 's/,/, /g')" "$mlog"

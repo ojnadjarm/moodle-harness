@@ -14,8 +14,8 @@ core-related work. These rules are mandatory whenever the task involves Moodle.
 2. **Read the coding style** before writing or reviewing any PHP:
    `~/.claude/moodle-coding-style.md` (full local copy — never fetch the web page).
 3. **Implement** following the style rules below.
-4. **Verify with `/moodle-ci`** (`mci quick`: codechecker, phpcs-delta, mphpcompat, mlang,
-   mapicompat, mcovers, PHPUnit) before considering the work complete.
+4. **Verify with `/moodle-ci`**: `mci auto` (the checks the change class needs: a lang string skips
+   PHPUnit, a logic change runs it) before considering the work complete; `mci full` before a release.
 5. **Ship a manual-test fixture script and `testing-instructions.md`** (see "Manual test
    data") so the feature can be exercised by hand in the browser, not just by PHPUnit.
 

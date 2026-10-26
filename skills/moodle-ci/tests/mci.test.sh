@@ -40,8 +40,9 @@ EOF
 cp "$SD/mci" "$M"; ln -s "$SD/phpcs-delta" "$T/scripts/phpcs-delta"; ln -s "$SD/mlog" "$T/scripts/mlog"; ln -s "$SD/mcovers" "$T/scripts/mcovers"
 cat > "$T/scripts/mtest" <<EOF
 #!/usr/bin/env bash
+echo "mtest \$*" >> "$T/mpc.log"
 [ "\$1" = behat ] || exec "$SD/mtest" "\$@"
-echo "mtest \$*" >> "$T/mpc.log"; [ -n "\${NOCONT:-}" ] && exit 3; exit "\${RED_behat:-0}"
+[ -n "\${NOCONT:-}" ] && exit 3; exit "\${RED_behat:-0}"
 EOF
 printf '#!/bin/sh\n[ -n "$NOCONT" ] && exit 3; exit "${RED_privacy:-0}"\n' > "$T/scripts/mprivacy"
 printf '#!/bin/sh\n[ -z "$PHPC_REAL" ] || exec "%s/mphpcompat" "$@"\necho "mphpcompat $*" >> "%s/mpc.log"; [ -z "$PHPC_MSG" ] || echo "$PHPC_MSG" >&2\nexit "${RED_phpcompat:-0}"\n' \
@@ -152,6 +153,36 @@ printf '<?php\n$string['"'"'pluginname'"'"'] = '"'"'X'"'"';\n$string['"'"'unused
 args=(quick); rc="$(run env LANG_REAL=1 APIC_REAL=1 MFIXTURE_ENVS="$T/envs")"
 check "$rc $(row lang) $(row apicompat) $(grep -c 'WARN' "$(grep -oP 'logs \K\S+' "$T/out").lang")" "0 0 0 1" "both real: green, mlang WARN does not fail"
 cp "$T/version.bak" "$P/version.php"
+
+# auto (T1399): change-class on the plugin's git diff picks the steps; quick passes --changed to PHPUnit on a dirty tree.
+ln -s "$HOME/agents/bin/change-class" "$T/bin/change-class"
+printf '#!/bin/sh\necho "{\\"files\\": {}}"\n' > "$T/bin/phpcs"; chmod +x "$T/bin/phpcs"
+rm -rf "$P/templates" "$P/tests/behat"; mkdir -p "$P/classes"; echo '<?php class a {}' > "$P/classes/a.php"
+for g in "init -q" "add -A" "-c user.name=t -c user.email=t@t commit -qm base"; do git -C "$P" $g; done
+printf '<?php\n$string['"'"'pluginname'"'"'] = '"'"'Y'"'"';\n' > "$P/lang/en/local_x.php"
+args=(); rc="$(run env)"
+check "$rc $(grep -c '^mci: auto: class docs -> codechecker phpcs-delta lang$' "$T/out")" "0 1" "auto is the default in git: lang-only diff is class docs"
+check "$(awk '$1 ~ /^(codechecker|phpcs-delta|lang)$/' "$T/out" | wc -l) $(grep -c '^phpunit\|^phpcompat\|^covers' "$T/out") $(grep -c '^mtest' "$T/mpc.log")" "3 0 0" "auto docs: 3 steps, no PHPUnit run"
+check "$(grep -c '^mci: auto (docs) x:' "$T/out")" 1 "auto: summary names the class"
+echo '<?php class a { public function f() {} }' > "$P/classes/a.php"
+args=(auto); rc="$(run env)"
+check "$rc $(row phpunit) $(grep -c "^mtest phpunit $P --changed$" "$T/mpc.log")" "0 0 1" "auto logic: quick steps, PHPUnit with --changed"
+check "$(grep -c '^phpmd\|^behat' "$T/out")" 0 "auto logic: no full steps"
+args=(quick); rc="$(run env)"
+check "$(grep -c "^mtest phpunit $P --changed$" "$T/mpc.log")" 1 "quick on a dirty tree: PHPUnit --changed"
+echo '<?php class a { public function f() { require_capability("x", $c); } }' > "$P/classes/a.php"
+args=(auto); rc="$(run env)"
+check "$(grep -c '^mci: auto: class security -> full$' "$T/out") $(grep -c '^phpmd\|^privacy' "$T/out")" "1 2" "auto security: full run"
+git -C "$P" checkout -q -- . && mkdir -p "$P/db" && echo '<XMLDB/>' > "$P/db/install.xml"
+args=(auto); rc="$(run env)"
+check "$(row savepoints) $(row privacy) $(grep -c "^mtest phpunit $P\$" "$T/mpc.log") $(grep -c '^phpmd' "$T/out")" "0 0 1 0" "auto schema: savepoints, privacy, whole PHPUnit, no phpmd"
+rm -rf "$P/db"
+args=(auto); rc="$(run env)"
+check "$(grep -c '^mci: auto: class none -> quick$' "$T/out") $(grep -c "^mtest phpunit $P\$" "$T/mpc.log")" "1 1" "auto clean tree: quick with the whole PHPUnit suite"
+rm "$T/bin/change-class"; echo '<?php class a { public function g() {} }' > "$P/classes/a.php"
+args=(auto); rc="$(run env)"
+check "$(grep -c '^mci: auto: class unknown (no change-class) -> full$' "$T/out")" 1 "auto without change-class: full"
+rm -rf "$P/.git"
 
 args=(full "$T"); rc="$(run env)"
 check "$rc" 2 "no plugin above path: rc 2"

@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # Run the Moodle CI steps for one plugin, each where it works (host, host -m root, container,
 # engines node).
-# Usage: mci [quick|full] [plugin-dir|file]   (default: quick, $PWD)
+# Usage: mci [auto|quick|full] [plugin-dir|file]   (default: auto in git, else quick; $PWD)
+#   auto: the steps the change's class needs (change-class on the plugin vs HEAD; T1399): none -> quick;
+#   docs, content -> codechecker, phpcs-delta, lang; ui -> + mustache; logic -> quick with PHPUnit --changed;
+#   schema -> quick + savepoints + privacy; engine, security, full (unknown) -> full. No change-class: full.
 #   quick: codechecker, phpcs-delta (when in git), phpcompat (mphpcompat), lang (mlang; WARN lines pass),
 #   apicompat (mapicompat; no UPGRADING.md is a SKIP), covers (mcovers: @covers below 5.0, #[CoversClass] from 5.0;
-#   no tests/ dir is a SKIP, mcovers --fix converts), phpunit (mtest).
+#   no tests/ dir is a SKIP, mcovers --fix converts), phpunit (mtest; --changed when the plugin has uncommitted changes).
 #   full adds phplint, phpmd, validate, savepoints, phpdoc, mustache, grunt, privacy (mprivacy),
 #   behat (mtest; only with tests/behat/*.feature, MCI_BEHAT_PARALLEL=N passes --parallel N).
 #   A step that cannot run here is a named SKIP, never a silent red (phpcompat without
 #   $plugin->requires too: run mphpcompat --php X.Y / mapicompat --since X.Y by hand; lang without lang/en).
 #   Prints red steps' log tails, then one `step rc sec` table; the table goes to an mlog log
-#   (scripts/mlog), each step's output to <log>.<step> beside it.
+#   (scripts/mlog), each step's output to <log>.<step> beside it, the plugin dir to <log>.plugin (tier-nightly reads it).
 # Exit: 1 if any step is red, else 0; 2 usage.
 set -uo pipefail
 
@@ -18,11 +21,11 @@ S="$(dirname "$(realpath "$0")")"
 . "$S/mlog"
 die() { echo "mci: $2" >&2; exit "$1"; }
 
-mode=quick
+mode=""
 case "${1:-}" in
-    quick|full) mode="$1"; shift;;
+    auto|quick|full) mode="$1"; shift;;
     -h|--help) sed -n '2,/^# Exit/s/^# \{0,1\}//p' "$0"; exit 0;;
-    -*) die 2 "usage: mci [quick|full] [plugin-dir]";;
+    -*) die 2 "usage: mci [auto|quick|full] [plugin-dir]";;
 esac
 target="$(realpath -m "${1:-$PWD}")"
 [ -e "$target" ] || die 2 "no such path: $target"
@@ -30,6 +33,24 @@ target="$(realpath -m "${1:-$PWD}")"
 plugin="$target"; [ -f "$plugin" ] && plugin="$(dirname "$plugin")"
 while [ "$plugin" != / ] && ! grep -qs '\$plugin->component' "$plugin/version.php"; do plugin="$(dirname "$plugin")"; done
 [ "$plugin" = / ] && die 2 "no plugin version.php above $target"
+
+ingit=0; git -C "$plugin" rev-parse --git-dir >/dev/null 2>&1 && ingit=1
+[ -n "$mode" ] || { mode=quick; [ "$ingit" = 1 ] && mode=auto; }
+cls="" only="" changed=""
+[ "$ingit" = 1 ] && [ -n "$(git -C "$plugin" status --porcelain -- . 2>/dev/null)" ] && changed=1
+if [ "$mode" = auto ]; then
+    CC="$(command -v change-class || echo "$HOME/agents/bin/change-class")"
+    cls="$([ -x "$CC" ] && "$CC" --repo "$plugin" | sed -n 's/^class: //p')"
+    case "${cls:-missing}" in
+        none) mode=quick changed="";;
+        docs|content) only="codechecker phpcs-delta lang";;
+        ui) only="codechecker phpcs-delta lang mustache";;
+        logic) mode=quick;;
+        schema) mode=quick only="codechecker phpcs-delta phpcompat lang apicompat covers phpunit savepoints privacy" changed="";;
+        *) mode=full;;
+    esac
+    echo "mci: auto: class ${cls:-unknown (no change-class)} -> ${only:-$mode}"
+fi
 
 root="$plugin"
 until [ -f "$root/vendor/bin/phpunit" ] || { [ -f "$root/config.php" ] && [ -d "$root/vendor" ]; }; do
@@ -70,6 +91,7 @@ added=""
 trap '[ -n "$added" ] && rm -rf "$added"' EXIT
 comp="$(mlog_component "$plugin")"
 L="$(mlog_new mci "$comp")" || die 1 "cannot create a log in $(mlog_dir "$comp")"
+printf '%s\n' "$plugin" > "$L.plugin"
 
 # Sets $reason when step $1 (placement $2) cannot run here; grunt also sets $nodebin.
 why_skip() {
@@ -115,6 +137,7 @@ run_step() {
         node) PATH="${nodebin:+$nodebin:}$PATH" "$MPC" "$1" -m "$root" "$plugin";;
         git) (cd "$plugin" && "$S/phpcs-delta" .);;
         mtest) local par=(); [ "$1" = behat ] && [ -n "${MCI_BEHAT_PARALLEL:-}" ] && par=(--parallel "$MCI_BEHAT_PARALLEL")
+               [ "$1" = phpunit ] && [ -n "$changed" ] && par=(--changed)
                "$S/mtest" "$1" "$plugin" ${par[@]+"${par[@]}"};;
         mpriv) "$S/mprivacy" "$plugin";;
         mphpc) "$S/mphpcompat" "$plugin";;
@@ -138,7 +161,8 @@ run_step() {
 rows=() red=0 skip=0 ok=0
 for s in "${STEPS[@]}"; do
     read -r name smode place <<<"$s"
-    [ "$mode" = quick ] && [ "$smode" = full ] && continue
+    if [ -n "$only" ]; then [[ " $only " == *" $name "* ]] || continue
+    elif [ "$mode" = quick ] && [ "$smode" = full ]; then continue; fi
     why_skip "$name" "$place"
     t0=$(date +%s) rc=SKIP
     if [ -z "$reason" ]; then
@@ -155,5 +179,5 @@ done
 
 { printf '%-12s %-5s %4s  %s\n' step rc sec note
   printf '%s\n' "${rows[@]}"
-  echo "mci: $mode ${plugin##*/}: $ok ok, $red red, $skip skip; logs $L"; } | tee "$L"
+  echo "mci: $mode${cls:+ ($cls)} ${plugin##*/}: $ok ok, $red red, $skip skip; logs $L"; } | tee "$L"
 [ "$red" = 0 ]

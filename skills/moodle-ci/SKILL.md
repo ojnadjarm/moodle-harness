@@ -16,12 +16,12 @@ composer or phpcs**; those live on the **host** and survive container rebuilds. 
   PHPUnit, Behat and the privacy provider tests (DB). `mci`/`mtest` place each step; never hand-write
   `docker exec`.
 
-`$ARGUMENTS` selects the mode: `quick` (default — codechecker, phpcs-delta, mphpcompat, mlang, mapicompat, mcovers, PHPUnit) or `full` (whole suite).
+`$ARGUMENTS` selects the mode: `auto` (default in git — the steps the change class needs, `change-class`), `quick` (codechecker, phpcs-delta, mphpcompat, mlang, mapicompat, mcovers, PHPUnit) or `full` (whole suite).
 
 ## Scripts (use these before hand-written commands)
 
 `S=~/.claude/skills/moodle-ci/scripts`
-- `$S/mci [quick|full] [plugin-dir]` — the whole run: each step where it works (host; host `-m root`;
+- `$S/mci [auto|quick|full] [plugin-dir]` — the whole run: each step where it works (host; host `-m root`;
   validate/phpdoc in the container, which has Moodle's config and dataroot; grunt with the node major
   `package.json` asks for, from nvm). A step that cannot run here is a named SKIP. Prints red steps' log
   tails, then one `step rc sec` table; exit 1 if any step is red.
@@ -114,10 +114,16 @@ MPC="$HOME/.moodle-plugin-ci/bin/moodle-plugin-ci"; command -v moodle-plugin-ci 
   SKIP with the reason; tell the user to start their Moodle docker environment (don't guess the
   version); host steps still run.
 
-## 1. Quick mode (default) — the after-coding gate
+## 1. Auto mode (default) — the after-coding gate
 
+Verify with `mci auto`; `mci full` before a release (T1399). `change-class` maps the plugin's diff vs HEAD to its
+highest class: docs/content (lang, pix) run codechecker, phpcs-delta, lang; ui (templates, CSS) adds mustache; logic
+runs quick with `mtest phpunit --changed`; schema (db/, version.php) runs quick with the whole PHPUnit suite, savepoints
+and privacy; security (privacy, access, services, `require_capability` in the diff), unknown files or no change-class run
+full. A nightly `mci full` covers every component with an mci log that day (`tier-nightly`).
 ```bash
-$S/mci quick "$PLUGIN"     # codechecker + phpcs-delta (in git) + mphpcompat + mlang + mapicompat + mcovers + mtest phpunit
+$S/mci "$PLUGIN"           # auto in git; the first line names the class and the steps
+$S/mci quick "$PLUGIN"     # codechecker + phpcs-delta (in git) + mphpcompat + mlang + mapicompat + mcovers + mtest phpunit (--changed on a dirty tree)
 ```
 - Fix all codechecker **errors**. Auto-fix with `$S/mfix "$PLUGIN"` (phpcbf on changed files, then what is left).
 - Leave pre-existing **warnings** on legacy code unless asked (per the Moodle guidelines); on scope-only
