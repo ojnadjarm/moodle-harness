@@ -68,11 +68,12 @@ guard() {
         done
     done
     [ ! -e "$env" ] || refuse "$env already exists; pick a fresh one with --new-name <x>"
-    ! docker compose ls -a -q | grep -qx "$name" || refuse "compose project $name already exists; pick a fresh one with --new-name <x>"
+    projects="$(docker compose ls -a -q)"
+    case $'\n'"$projects"$'\n' in *$'\n'"$name"$'\n'*) refuse "compose project $name already exists; pick a fresh one with --new-name <x>" ;; esac
 }
 guard
 # Unset dev passwords: reuse the env's existing DB password, else generate one for this env.
-[ -z "$DBPASS" ] && [ -f "$compose" ] && DBPASS="$(sed -n 's/.*_PASSWORD: "\(.*\)"/\1/p' "$compose" | head -1)"
+[ -z "$DBPASS" ] && [ -f "$compose" ] && DBPASS="$(sed -n '/.*_PASSWORD: "\(.*\)"/{s//\1/p;q}' "$compose")"
 [ -z "$DBPASS" ] && DBPASS="$(openssl rand -hex 8)"
 [ -z "$ADMINPASS" ] && ADMINPASS="Dev1-$(openssl rand -hex 4)!"
 # pick <port>: with --name, the next port not listening, not in any env's compose file and not the default env's own.
