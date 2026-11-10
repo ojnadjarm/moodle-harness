@@ -7,7 +7,9 @@
 #   schema -> quick + savepoints + privacy; engine, security, full (unknown) -> full. No change-class: full.
 #   quick: codechecker, phpcs-delta (when in git), phpcompat (mphpcompat), lang (mlang; WARN lines pass),
 #   apicompat (mapicompat; no UPGRADING.md is a SKIP), covers (mcovers: @covers below 5.0, #[CoversClass] from 5.0;
-#   no tests/ dir is a SKIP, mcovers --fix converts), phpunit (mtest; --changed when the plugin has uncommitted changes).
+#   no tests/ dir is a SKIP, mcovers --fix converts), phpunit (mtest; --changed when the plugin has uncommitted changes),
+#   testchanges (test-changes, T1591: existing tests changed vs HEAD are red without a "Test changes" note in
+#   MCI_TEST_NOTE (file or dir; colon-separated); the list prints for the reviewer either way).
 #   full adds phplint, phpmd, validate, savepoints, phpdoc, mustache, grunt, privacy (mprivacy),
 #   behat (mtest; only with tests/behat/*.feature, MCI_BEHAT_PARALLEL=N passes --parallel N).
 #   A step that cannot run here is a named SKIP, never a silent red (phpcompat without
@@ -46,7 +48,7 @@ if [ "$mode" = auto ]; then
         docs|content) only="codechecker phpcs-delta lang";;
         ui) only="codechecker phpcs-delta lang mustache";;
         logic) mode=quick;;
-        schema) mode=quick only="codechecker phpcs-delta phpcompat lang apicompat covers phpunit savepoints privacy" changed="";;
+        schema) mode=quick only="codechecker phpcs-delta phpcompat lang apicompat covers phpunit testchanges savepoints privacy" changed="";;
         *) mode=full;;
     esac
     echo "mci: auto: class ${cls:-unknown (no change-class)} -> ${only:-$mode}"
@@ -63,10 +65,11 @@ mpcdir=""; [ -x "$MPC" ] && mpcdir="$(dirname "$(dirname "$(realpath "$MPC")")")
 C="" D=""
 [ "$mode" = full ] && [ -n "$root" ] && IFS=$'\t' read -r C D < <("$HOME/.claude/hooks/moodle-container.sh" "$root")
 CMPC=/tmp/mci-mpc
+TCH="$(command -v test-changes || echo "$HOME/agents/bin/test-changes")"
 
 # name, mode, placement: host = MPC on the plugin; hostm = MPC -m root on the host; cont = MPC -m root in the
 # container (needs Moodle's config/dataroot); node = hostm with the node major package.json asks for;
-# mtest/mpriv/mphpc/mlang/mapicmp/mcov = the sibling mtest/mprivacy/mphpcompat/mlang/mapicompat/mcovers scripts
+# tchg = ~/agents/bin/test-changes on the plugin; mtest/mpriv/mphpc/mlang/mapicmp/mcov = the sibling mtest/mprivacy/mphpcompat/mlang/mapicompat/mcovers scripts
 # (their rc 3 is a SKIP).
 STEPS=(
     "codechecker quick host"
@@ -76,6 +79,7 @@ STEPS=(
     "apicompat   quick mapicmp"
     "covers      quick mcov"
     "phpunit     quick mtest"
+    "testchanges quick tchg"
     "phplint     full  host"
     "phpmd       full  hostm"
     "validate    full  cont"
@@ -101,7 +105,8 @@ why_skip() {
     case "$2" in
         cont) if [ -z "$C" ]; then reason="no running container mounts $root; start the env"
               elif [ ! -f "$mpcdir/composer.lock" ]; then reason="no $mpcdir/composer.lock to stamp the container copy"; fi;;
-        git) git -C "$plugin" rev-parse --git-dir >/dev/null 2>&1 || reason="plugin is not in a git repo";;
+        git|tchg) git -C "$plugin" rev-parse --git-dir >/dev/null 2>&1 || reason="plugin is not in a git repo"
+             [ "$2" = tchg ] && [ -z "$reason" ] && [ ! -x "$TCH" ] && reason="no test-changes CLI (~/agents/bin)";;
         mtest) if [ "$1" = behat ]; then compgen -G "$plugin/tests/behat/*.feature" >/dev/null || reason="no features in tests/behat"
                else [ -n "$(find "$plugin/tests" -name '*_test.php' -print -quit 2>/dev/null)" ] || reason="no tests/*_test.php"; fi;;
         mlang) local short="${comp#mod_}"; [ -f "$plugin/lang/en/$short.php" ] || reason="no lang/en/$short.php";;
@@ -144,6 +149,7 @@ run_step() {
         mlang) "$S/mlang" "$plugin";;
         mapicmp) "$S/mapicompat" "$plugin";;
         mcov) "$S/mcovers" --check "$plugin";;
+        tchg) TEST_CHANGES_NOTE="${MCI_TEST_NOTE:-${TEST_CHANGES_NOTE:-}}" "$TCH" --repo "$plugin";;
         cont)
             push_mpc || return 1
             if [ "$1" = phpdoc ]; then
@@ -171,7 +177,7 @@ for s in "${STEPS[@]}"; do
     fi
     case "$rc" in
         SKIP) skip=$((skip + 1));;
-        0) ok=$((ok + 1));;
+        0) ok=$((ok + 1)); [ "$name" = testchanges ] && grep -q '^NEEDS REVIEW' "$L.$name" && cat "$L.$name";;
         *) red=$((red + 1)); echo "== $name rc=$rc: last lines of $L.$name"; tail -n 30 "$L.$name";;
     esac
     rows+=("$(printf '%-12s %-5s %4s  %s' "$name" "$rc" "$(( $(date +%s) - t0 ))" "$reason")")

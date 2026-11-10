@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stop hook: block once per PHP diff in a Moodle project until each changed component's mtest/mci log is newer than its change;
-# lang/** and templates/** files never demand it (T1399: mci auto runs their class's checks).
+# lang/** and templates/** files never demand it (T1399: mci auto runs their class's checks); changed existing tests ask for a note (T1591).
 
 grep -q '"stop_hook_active" *: *true' && exit 0
 
@@ -54,12 +54,15 @@ if [ -z "$mlog" ]; then
 fi
 
 mkdir -p "$(dirname "$stamp")" && printf '%s\n' "$hash" > "$stamp"
+tests="$(git diff --name-only --relative "$base" -- '*_test.php' '*.feature' | head -3 | tr '\n' ' ')"
 
 python3 -c '
 import json, sys
-root, comps, mlog = sys.argv[1:4]
+root, comps, mlog, tests = sys.argv[1:5]
 r = "PHP changed in %s%s and no mtest/mci run since: run /moodle-ci (mci auto: the checks the change class needs) before wrapping up, or say why it is skipped." % (root, " (" + comps + ")" if comps else "")
 if mlog:
     r += " The log check is off: %s is missing." % mlog
-print(json.dumps({"decision": "block", "reason": r}))' "$root" "$(IFS=,; printf '%s' "${stale[*]}" | sed 's/,/, /g')" "$mlog"
+if tests.strip():
+    r += " Existing tests changed (%s): write a Test changes note (file · test · requirement · before -> after; guide test-changes), run mci with MCI_TEST_NOTE=<note>, and have the list reviewed before done." % tests.strip()
+print(json.dumps({"decision": "block", "reason": r}))' "$root" "$(IFS=,; printf '%s' "${stale[*]}" | sed 's/,/, /g')" "$mlog" "$tests"
 exit 0

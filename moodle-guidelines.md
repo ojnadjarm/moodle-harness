@@ -163,6 +163,16 @@ harness table: `~/.claude/moodle-quickref.md`.
   public function test_editor_marks_course_complete_at_override_time(): void {
   ```
 
+### Existing tests are frozen (T1591)
+
+- Never weaken, skip or delete an existing assertion or test to get green. Only a task that changes a feature's
+  behaviour may change its tests, and each changed test gets a line under a `## Test changes` heading in the report:
+  `- <file> · <test> · <requirement that changed> · <assertion before> → <assertion after>`.
+- `mci` step `testchanges` (`test-changes --repo <plugin>`) diffs tests vs HEAD and lists removed, weakened and skipped
+  assertions and deleted tests; it is red until `MCI_TEST_NOTE=<note file or dir>` covers every changed file. New test
+  files never count. A second agent or the orchestrator reviews the list before the work is reported done
+  (`guide test-changes`).
+
 ## Manual test data
 
 Green unit tests are not enough — the user still has to click through the feature, and

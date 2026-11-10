@@ -16,7 +16,7 @@ composer or phpcs**; those live on the **host** and survive container rebuilds. 
   PHPUnit, Behat and the privacy provider tests (DB). `mci`/`mtest` place each step; never hand-write
   `docker exec`.
 
-`$ARGUMENTS` selects the mode: `auto` (default in git — the steps the change class needs, `change-class`), `quick` (codechecker, phpcs-delta, mphpcompat, mlang, mapicompat, mcovers, PHPUnit) or `full` (whole suite).
+`$ARGUMENTS` selects the mode: `auto` (default in git — the steps the change class needs, `change-class`), `quick` (codechecker, phpcs-delta, mphpcompat, mlang, mapicompat, mcovers, PHPUnit, testchanges) or `full` (whole suite).
 
 ## Scripts (use these before hand-written commands)
 
@@ -85,6 +85,9 @@ composer or phpcs**; those live on the **host** and survive container rebuilds. 
   tables missing from `get_metadata`, `privacy:metadata*` ids without a lang string, a provider without
   `core_userlist_provider` (FAIL), and a user table missing from export or a delete method (WARN). `--static`: host
   checks only, no container. `// mprivacy:kept <table> <reason>` in classes/privacy turns that WARN into `KEPT`.
+- `mci` step `testchanges` (T1591): `~/agents/bin/test-changes --repo <plugin>` lists existing tests changed vs HEAD
+  (removed/weakened/skipped assertions, deleted tests); red without a `## Test changes` note in `MCI_TEST_NOTE`
+  (`- <file> · <test> · <requirement> · <before> → <after>`); the list prints for the reviewer. `guide test-changes`.
 - `$S/mcovers [--check|--fix] [plugin-dir]` — coverage style vs `requires`: `@covers` tags below 5.0, `#[CoversClass]`
   attributes from 5.0; `--check` prints `file:line FAIL`, `--fix` converts (idempotent); SKIP rc 3 without tests/. In `mci quick`.
 - `$S/msrc <X.Y|requires> [--fetch]` — prints a read-only core code root for a branch: a matching ~/moodle-envs tree
