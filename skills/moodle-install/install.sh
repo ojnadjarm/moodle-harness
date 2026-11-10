@@ -146,14 +146,14 @@ services:
     restart: unless-stopped
 $dbblock
     ports:
-      - "$dbport:$dbinner"
+      - "127.0.0.1:$dbport:$dbinner"
   app:
     restart: unless-stopped
     image: moodlehq/moodle-php-apache:$php
     depends_on:
       - db
     ports:
-      - "$webport:80"
+      - "127.0.0.1:$webport:80"
     environment:
       APACHE_DOCUMENT_ROOT: $docroot
     volumes:
@@ -287,8 +287,9 @@ if [ "$init_behat" = 1 ]; then
 fi
 
 if [ "$https" = 1 ]; then
-    echo "== tailscale serve $tlsport -> 127.0.0.1:$webport"
+    echo "== tailscale serve $tlsport -> 127.0.0.1:$webport, tcp $webport -> 127.0.0.1:$webport"
     tailscale serve --bg --https="$tlsport" "http://127.0.0.1:$webport" >/dev/null
+    tailscale serve --bg --tcp="$webport" "tcp://127.0.0.1:$webport" >/dev/null
 fi
 
 hint="            Browsers resolve *.localhost automatically. From curl/CLI (or a browser that does not),

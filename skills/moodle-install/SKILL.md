@@ -33,10 +33,10 @@ containers, ports). It refuses (exit 3) an env dir or compose project that alrea
 | 5.2 | 8.4 | 16 | 8.4 |
 | 5.3 | 8.4 | 17 | 8.4 |
 
-DB defaults to pgsql. Each site is `http://moodle<MM>.localhost` (4.5 → `http://moodle45.localhost`; `moodle-45.localhost` works too) through the shared nginx on port 80, which routes by hostname to the app alias. Direct ports follow the version as a fallback: web `80MM`, db `54MM` (pgsql) or `33MM` (mysql). Mailhog (1025/8025) and selenium (4444/5900/7900) are bound once, by the shared stack.
+DB defaults to pgsql. Each site is `http://moodle<MM>.localhost` (4.5 → `http://moodle45.localhost`; `moodle-45.localhost` works too) through the shared nginx on port 80, which routes by hostname to the app alias. Direct ports follow the version as a fallback: web `80MM`, db `54MM` (pgsql) or `33MM` (mysql). Mailhog (1025/8025) and selenium (4444/5900/7900) are bound once, by the shared stack. Every published port binds `127.0.0.1` only (T1559: no LAN listener; Docker publishes bypass ufw); the tailnet reaches a port through `tailscale serve`.
 `--name <x>` (e.g. `/moodle-install 4.5 --name lts45`, a 4.5 LTS env beside the Vass site) makes env dir `~/moodle-envs/<x>` and project `moodle<x>`, takes the first ports past `80MM`/`54MM` (or `33MM`) that no running service or other env's compose file uses, and serves the site at `http://localhost:<web port>` (nginx routes only `moodle<MM>.localhost`).
-`--host <name-or-ip>` (e.g. the laptop's LAN IP) makes the site URL `http://<host>:80MM` instead, so the env is reachable from other machines on its own port.
-`--https` (needs `--host`, a tailnet MagicDNS name) adds a `tailscale serve` TLS mapping on port `84MM` -> `127.0.0.1:80MM` and makes `config.php` switch `wwwroot` to `https://<host>:84MM` with `$CFG->sslproxy = true` when the request arrives with `X-Forwarded-Proto: https`. The plain `http://<host>:80MM` URL keeps working for Behat/selenium and CLI. Undo with `tailscale serve --https=84MM off`.
+`--host <tailnet name>` makes the site URL `http://<host>:80MM` instead; with `--https` it is reachable from other tailnet machines on its own port.
+`--https` (needs `--host`, a tailnet MagicDNS name) adds a `tailscale serve` TLS mapping on port `84MM` -> `127.0.0.1:80MM` and makes `config.php` switch `wwwroot` to `https://<host>:84MM` with `$CFG->sslproxy = true` when the request arrives with `X-Forwarded-Proto: https`. It also adds `tailscale serve --tcp=80MM` -> `127.0.0.1:80MM`, so the plain `http://<host>:80MM` URL keeps working on the tailnet for Behat/selenium and CLI. Undo with `tailscale serve --https=84MM off` and `tailscale serve --tcp=80MM off`.
 
 ## Afterwards
 

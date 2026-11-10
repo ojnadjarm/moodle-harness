@@ -68,11 +68,12 @@ check "fresh default env installs" '[ "$rc" = 0 ] && grep -qx "name: moodle50" "
 "${box[@]}" "$S" 4.5 --name lts45 > "$FX/out" 2>&1; rc=$?
 y="$FX/moodle-envs/lts45/docker-compose.yml"
 check "--name lts45 installs as project moodlelts45" '[ "$rc" = 0 ] && grep -qx "name: moodlelts45" "$y"'
-check "--name lts45 skips the Vass and busy ports" 'grep -q "\"8047:80\"" "$y" && grep -q "\"5446:5432\"" "$y"'
+check "--name lts45 skips the Vass and busy ports" 'grep -q "\"127.0.0.1:8047:80\"" "$y" && grep -q "\"127.0.0.1:5446:5432\"" "$y"'
+check "--name lts45 publishes on loopback only" '! grep -Eq "^ +- \"[0-9]+:[0-9]+\"" "$y"'
 check "--name lts45 never names moodle45 or vass" '! grep -Eq "moodle45|vass" "$FX/docker.log" "$y"'
 check "--name lts45 site is its own port" 'grep -q "wwwroot   = '"'"'http://localhost:8047'"'"';" "$FX/moodle-envs/lts45/www/config.php" && grep -q "^Site: *http://localhost:8047 " "$FX/out"'
 "${box[@]}" "$S" 4.5 --name lts45b > "$FX/out" 2>&1; rc=$?
 y="$FX/moodle-envs/lts45b/docker-compose.yml"
-check "a second --name env skips a stopped env's ports" '[ "$rc" = 0 ] && grep -q "\"8048:80\"" "$y" && grep -q "\"5447:5432\"" "$y"'
+check "a second --name env skips a stopped env's ports" '[ "$rc" = 0 ] && grep -q "\"127.0.0.1:8048:80\"" "$y" && grep -q "\"127.0.0.1:5447:5432\"" "$y"'
 [ "$fail" = 0 ] && echo "guard.test: ok"
 exit "$fail"
