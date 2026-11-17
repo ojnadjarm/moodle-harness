@@ -192,8 +192,6 @@ symptom that matches one of these.
 - **external.py / mobile.py with a course cap return every course's rows** — the cap is checked in
   context_system (external.py) and no `courseid` filter is added: add the param, `validate_context()`
   and the filter by hand (T1028 #4, #6).
-- **`$S/mprivacy --static` WARNs on privacy.py's own provider** — the scan does not follow its
-  `tables()` loop; read the provider, not a fault (T1028 #5).
 
 ## Shared env (parallel agents)
 

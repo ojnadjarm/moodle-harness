@@ -7,9 +7,9 @@
 #     core_userlist_provider (grouped and aliased use imports resolved); WARN for null_provider with user-field tables,
 #     and for a user-field get_metadata table absent from export_user_data or a delete_data_for_* body of class
 #     provider or its plugin traits (as {table} or ->call('table'); own methods, plugin Class::m() and plugin
-#     functions followed 3 calls deep). `// mprivacy:kept <table> <reason>` in classes/privacy turns that table's
-#     export/delete WARN into a KEPT line (data kept on purpose); WARN for a kept table not in get_metadata with user
-#     fields, and for a required export/delete method found in neither the provider nor its plugin traits.
+#     functions followed 3 calls deep; a foreach over an own method's table-keyed array counts its keys).
+#     `// mprivacy:kept <table> <reason>` in classes/privacy turns that table's export/delete WARN
+#     into a KEPT line (data kept on purpose); WARN for a kept table not in get_metadata with user fields, and for a required export/delete method found in neither the provider nor its plugin traits.
 #   Container: provider_test filtered to data set "<component>", phpunit env inited only when stale (mtest init).
 # Exit: 1 on any FAIL (a static FAIL even with no container) or 0 tests matched; 2 usage, 3 no container. Log path last.
 set -uo pipefail
@@ -198,9 +198,18 @@ def calls(f, key, body):
     for m in re.finditer(r"(?<![\w$>:\\])(\w+)\s*\(", body):
         yield None, m.group(1).lower()
 
+def looped(key, body):
+    """{t} for each array key of an own method a foreach in body walks with a key variable (privacy.py's tables())."""
+    out = []
+    for m in re.finditer(r"\bforeach\s*\(\s*(?:\$this\s*->|\b(?:self|static)\s*::)\s*(\w+)\s*\(\s*\)\s+as\s+\$\w+\s*=>", body):
+        hit = lookup(key, m.group(1)) if key else None
+        out += ["{%s}" % t for t in re.findall(r"""['"]([a-z0-9_]+)['"]\s*=>""", hit[1])] if hit else []
+    return "".join(out)
+
 def reach(key, f, body, depth=3):
-    """The body plus the bodies of plugin functions and methods it calls, depth levels deep; persistent TABLE as {t}."""
-    seen, todo, out = set(), [(key, f, body)], [body]
+    """The body plus the bodies of plugin functions and methods it calls, depth levels deep; persistent TABLE and
+    array keys of an own method walked by foreach as {t}."""
+    seen, todo, out = set(), [(key, f, body)], [body, looped(key, body)]
     for _ in range(depth):
         nxt = []
         for k, kf, b in todo:
@@ -215,7 +224,7 @@ def reach(key, f, body, depth=3):
                 else:
                     hit = lookup(*c)
                     nxt += [(c[0], *hit)] if hit else []
-        out += [b for _, _, b in nxt]; todo = nxt
+        out += [b + looped(k, b) for k, _, b in nxt]; todo = nxt
     return "".join(out)
 
 kept = {m.group(1): m.group(2).strip() for m in

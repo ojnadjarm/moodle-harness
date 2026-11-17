@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Wire the Moodle SessionStart + Stop hooks into a Claude settings file, idempotently."""
+"""Wire the Moodle SessionStart, Stop and WebFetch hooks into a Claude settings file, idempotently."""
 import json
 import os
 import sys
 
 SESSION = "$HOME/.claude/hooks/moodle-session-start.sh"
 STOP = "$HOME/.claude/hooks/moodle-stop-reminder.sh"
+FETCH = "$HOME/.claude/hooks/moodle-docs-fetch-deny.sh"
 
 
 def commands(groups):
@@ -25,6 +26,9 @@ def wire(data):
     stop = hooks.get("Stop", [])
     if STOP not in commands(stop):
         hooks["Stop"] = stop + [{"hooks": [{"type": "command", "command": STOP}]}]
+    pre = hooks.get("PreToolUse", [])
+    if FETCH not in commands(pre):
+        hooks["PreToolUse"] = pre + [{"matcher": "WebFetch", "hooks": [{"type": "command", "command": FETCH, "timeout": 5}]}]
     return data
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fixture tests for wire-hooks.py: fresh file, re-run, fleet SessionStart present, other keys preserved.
+# Fixture tests for wire-hooks.py: fresh file, re-run, fleet SessionStart present, other keys preserved, WebFetch deny.
 set -uo pipefail
 script="$(cd "$(dirname "$0")/.." && pwd)/wire-hooks.py"
 tmp=$(mktemp -d)
@@ -26,5 +26,9 @@ f=$tmp/other.json
 echo '{"model":"x","permissions":{"allow":["Bash(ls)"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"$HOME/.claude/hooks/moodle-stop-reminder.sh"}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"/x/guard.py"}]}]}}' > "$f"
 python3 "$script" "$f" >/dev/null
 check "other keys and hooks kept, Stop not doubled" 'python3 -c "import json,sys;d=json.load(open(sys.argv[1]));assert d[\"model\"]==\"x\" and d[\"permissions\"][\"allow\"]==[\"Bash(ls)\"] and d[\"hooks\"][\"PreToolUse\"][0][\"hooks\"][0][\"command\"]==\"/x/guard.py\"" "$f" && [ "$(count "$f" Stop /moodle-stop-reminder.sh)" = 1 ] && [ "$(count "$f" SessionStart /moodle-session-start.sh)" = 1 ]'
+
+check "WebFetch deny wired once, beside an existing PreToolUse hook" '[ "$(count "$f" PreToolUse /moodle-docs-fetch-deny.sh)" = 1 ] && python3 -c "import json,sys;p=json.load(open(sys.argv[1]))[\"hooks\"][\"PreToolUse\"];assert len(p)==2 and p[1][\"matcher\"]==\"WebFetch\"" "$f"'
+python3 "$script" "$f" >/dev/null
+check "WebFetch deny not doubled on re-run" '[ "$(count "$f" PreToolUse /moodle-docs-fetch-deny.sh)" = 1 ]'
 
 exit $fail

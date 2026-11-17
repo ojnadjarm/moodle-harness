@@ -3,7 +3,7 @@
 # static FAIL without a container, init failure, no temp leaks, userlist (use imports resolved), export/delete coverage
 # WARNs (no bare-name helper or bare-string false PASS, provider class only), bad flag / missing path rc 2, --static
 # without docker, `mprivacy:kept` KEPT lines and unknown-table WARN, trait methods (namespaced, unresolved), aliased
-# and core-namespaced Class::m() calls, persistent TABLE.
+# and core-namespaced Class::m() calls, persistent TABLE, a foreach over an own method's table-keyed array.
 set -uo pipefail
 M="$(cd "$(dirname "$0")/.." && pwd)/scripts/mprivacy"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
@@ -207,6 +207,13 @@ USE='use local_x\entry;' prov "$I" "$E" "$D" "$D" "foreach (entry::get_records([
 out="$(run "$M" --static "$P")"; rc=$?
 check 'grep -q "^PASS delete" <<<"$out"' "persistent class with const TABLE: followed, PASS"
 rm -r "$P/classes/local"
+L='foreach (self::tables() as $table => $info) { $DB->delete_records_list($table, "id", [1]); }'
+prov "$I" "$L" "self::rows();" "$L" "$L" "private static function tables(): array { return ['local_x_log' => ['fields' => ['userid']]]; } private static function rows() { $L }"
+out="$(run "$M" --static "$P")"; rc=$?
+check '[ $rc = 0 ] && grep -q "^PASS export" <<<"$out" && grep -q "^PASS delete" <<<"$out" && ! grep -q "^WARN" <<<"$out"' "privacy.py tables() loop: keys followed, PASS"
+prov "$I" "$L" "$L" "$L" "$L" "private static function tables(): array { return ['local_x_other' => ['fields' => ['userid']]]; }"
+out="$(run "$M" --static "$P")"; rc=$?
+check 'grep -q "^WARN export .*local_x_log" <<<"$out"' "tables() loop without the table: WARN"
 
 echo "<?php \$string['privacy:metadata'] = 'No data.';" > "$P/lang/en/local_x.php"
 echo "<?php class provider implements \\core_privacy\\local\\metadata\\null_provider { static function get_reason(): string { return 'privacy:metadata'; } }" \
