@@ -63,6 +63,6 @@ r = "PHP changed in %s%s and no mtest/mci run since: run /moodle-ci (mci auto: t
 if mlog:
     r += " The log check is off: %s is missing." % mlog
 if tests.strip():
-    r += " Existing tests changed (%s): write a Test changes note (file · test · requirement · before -> after; guide test-changes), run mci with MCI_TEST_NOTE=<note>, and have the list reviewed before done." % tests.strip()
+    r += " Existing tests changed (%s): write a Test changes note (file · test · requirement · before -> after; guide test-changes), run mci with MCI_TEST_NOTE=<note>; the lead reads the list." % tests.strip()
 print(json.dumps({"decision": "block", "reason": r}))' "$root" "$(IFS=,; printf '%s' "${stale[*]}" | sed 's/,/, /g')" "$mlog" "$tests"
 exit 0

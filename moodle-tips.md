@@ -20,11 +20,11 @@ symptom that matches one of these.
   (new completion_criteria_activity())->update_config($data);
   ```
 
-  Writing `course_completions` rows directly does NOT create criteria — the two are
+  Writing `course_completions` rows directly does not create criteria — the two are
   independent, so completion overrides can exist on a course whose report stays hidden.
 
 - **`create_module()` emits "Undefined property: stdClass::$cmidnumber"** — `course/modlib.php`
-  reads `$moduleinfo->cmidnumber` unconditionally. Always pass `'cmidnumber' => ''`.
+  reads `$moduleinfo->cmidnumber` unconditionally: pass `'cmidnumber' => ''`.
 
 ## DML / core APIs
 
@@ -42,21 +42,14 @@ symptom that matches one of these.
   `logintoken`/password check (core uses it from `admin/tool/mobile/autologin.php` and
   `auth/lti/login.php`); only `authenticate_user_login()` validates the login CSRF token.
   A signed, single-use token verified in an `auth_*` plugin's login page then
-  `complete_user_login()` + redirect is the clean pattern. Never set
-  `$CFG->disablelogintoken` / `alternateloginurl` for this (site-wide CSRF regression).
+  `complete_user_login()` + redirect is the clean pattern. Leave `$CFG->disablelogintoken` /
+  `alternateloginurl` alone for this: setting them is a site-wide CSRF regression.
 
 ## Distribution-specific plugins
 
-- **Some behaviour only exists in a Moodle distribution that ships extra components** —
-  detect the component at runtime (a class/function existence check, or the distribution's
-  own environment helper) and gate those tests with `markTestSkipped()` so the base-Moodle
-  CI matrix stays green.
 - **A custom-field handler singleton survives PHPUnit's reset** — e.g. a plugin's
   `customfield\..._handler`: a second test saving custom-field data hits a duplicate-key
   `debugging()` notice. Call the handler's `reset_caches()` in `setUp()`.
-- **Observer `mtrace()` noise from other installed plugins (e.g. on
-  `user_enrolment_created`) fails tests under strict output mode** — `ob_start()` does not
-  swallow it; use `$this->expectOutputRegex('/.../')`.
 
 ## Forms
 
@@ -92,8 +85,7 @@ symptom that matches one of these.
 - **`CoreUrl` (`src/core/static/url.ts`) is the app's URL toolbox** — `toAbsoluteURL`,
   `removeUrlParts`, `extractUrlParams`, pluginfile helpers. Check it (and `CoreDom`,
   `CoreText`) before hand-writing any URL/HTML string manipulation.
-- App setup, serve, one test, lint: `moodleapp-instructions.md`. Trace URL/HTML
-  transforms: `grep -rn "removeUrlParts\|toAbsoluteURL\|restoreSourcesInHtml" src/core --include=*.ts`
+- Trace URL/HTML transforms: `grep -rn "removeUrlParts\|toAbsoluteURL\|restoreSourcesInHtml" src/core --include=*.ts`
 
 ## Docker
 
@@ -128,12 +120,6 @@ symptom that matches one of these.
   host port (two Moodle stacks both binding 80 and 3306 can't run together). Stop the other
   stack, then `docker compose up -d --force-recreate app`; verify with `docker port <app>`.
   Both at once: the proxy override above.
-- **An env is stopped** (only after a manual `docker compose stop`; reboots restart
-  them) — `docker compose up -d` in `~/moodle-envs/<ver>` and wait for the DB before
-  PHPUnit or CLI scripts; never assume a version, list with `docker ps -a`.
-- **`mtest: no Moodle root (vendor/) above <plugin>`** — the env has no `vendor/`.
-  `/moodle-install` runs composer since T755; old envs: `composer install` once in the
-  app container.
 
 ## Upgrade / plugin testing
 
@@ -145,16 +131,6 @@ symptom that matches one of these.
   `admin/cli/upgrade.php` — the upgrade process itself does per-plugin DB-vs-disk
   comparison and runs the pending upgrade steps. (On Moodle 5.1+ the CLI scripts live at
   the repo root `admin/cli/`, not under `public/`.)
-- **PHPUnit fails with schema/version errors right after a `version.php` or
-  `db/install.xml` change** — the test DB is stale; run `$S/mtest init phpunit` in the
-  plugin dir.
-- **Raw PHPUnit fails "initialised for different version" or `Class "…_testcase" not
-  found`** — stale test env after a core/plugin version change, or a single-file run that
-  never loads the plugin's `tests/` base class. Fix: `mtest phpunit <file>` (inits only when
-  stale, scopes the suite).
-- **PHPUnit rc 0 but nothing ran** — PHPUnit 11 prints "No tests executed!" and exits 0
-  (`failOnEmptyTestSuite` off) on a typo'd `--filter` or a class named unlike its file.
-  Check the test count, never rc alone.
 - **Behat runs 0 scenarios** — `config.php` has `$CFG->behat_wwwroot` equal to `wwwroot`,
   so Behat refuses the site. Fix: give `behat_wwwroot` its own host (e.g. the app alias).
 - **Cron fails every minute with "upgrade pending" after a test** — a throwaway plugin
@@ -163,16 +139,13 @@ symptom that matches one of these.
 - **`moodle-plugin-ci validate|phpdoc|grunt .` exits 1: "Failed to find Moodle config file"**
   — on the host there is no Moodle root; `-m <root>` then fatals on
   `$CFG->dataroot`. An environment failure, not the code: don't fix the plugin for it.
-- **A whole-site PHPUnit run fatals on "Cannot declare class …_test"** — two plugins ship
-  a test class with the same name (e.g. `event_processor_test` in `tool_example` and
-  `tool_trigger`). Always scope with `--testsuite <component>_testsuite`.
 - **A fragment loaded with `core/fragment` empties the target node instead of filling it** —
   `Fragment.loadFragment()` resolves a jQuery Deferred with TWO arguments (`html`, processed
   `js`), so `const r = await Fragment.loadFragment(...)` gives the html string and `r.html` is
   `undefined`; `Templates.replaceNodeContents(node, undefined, undefined)` then empties the node
   silently. Consume it as
   `await Fragment.loadFragment(...).then((html, js) => Templates.replaceNodeContents(node, html, js))`.
-- **`output_fragment_*` callbacks must not render through `$OUTPUT`** — in the web-service flow
+- **`output_fragment_*` callbacks render through `$PAGE`, not `$OUTPUT`** — in the web-service flow
   `$OUTPUT` is a real renderer only because `core_external::get_fragment()` calls
   `$OUTPUT->header()` first; under PHPUnit it is still `core\output\bootstrap_renderer`, so a
   `renderer_base` type hint fatals. Use `$PAGE->get_renderer('core')` inside the callback.
@@ -182,8 +155,6 @@ symptom that matches one of these.
   `report_<x>_extend_navigation_course()`; generate.py's report_ type writes it.
 - **The app cannot call the plugin's WS** — its db/services.php entry needs
   `'services' => [MOODLE_OFFICIAL_MOBILE_SERVICE]`: `external.py --mobile`.
-- **`table.py --page index` refuses a fresh report_ plugin** ("already exists") — generate.py
-  wrote a heading-only index.php; delete that stub first (T1029 #1).
 - **A plugin built from helpers passes CI yet does nothing** — message.py, cache.py and output.py
   write only their class + test: call `notifier::send_<x>()`, fill/purge the cache and render the
   output class yourself; no helper inserts table rows (T1028 #1-#3).

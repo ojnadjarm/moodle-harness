@@ -13,6 +13,11 @@ whitelist=(
     'credits'
     'see also'
 )
+# Sections left to the code checkers (codechecker, phpdoc): the heading and everything under it.
+checked=(
+    'file formatting' 'strings' 'objects' 'arrays' 'classes' 'functions and methods'
+    'control statements' 'require include' 'documentation and comments' 'policy about coding style only fixes'
+)
 
 [[ -r "$upstream" ]] || { echo "SKIP: upstream mirror not found: $upstream"; exit 0; }
 [[ -r "$local_copy" ]] || { echo "FAIL: local copy not found: $local_copy"; exit 1; }
@@ -35,7 +40,8 @@ keys() {
         }' "$1" | sort -u
 }
 
-missing=$(comm -23 <(keys "$upstream") <(keys "$local_copy") | grep -vxF -f <(printf '%s\n' "${whitelist[@]}") || true)
+missing=$(comm -23 <(keys "$upstream") <(keys "$local_copy") | grep -vxF -f <(printf '%s\n' "${whitelist[@]}") |
+    grep -vE "^($(IFS='|'; echo "${checked[*]}"))( > |$)" || true)
 total=$(keys "$upstream" | wc -l)
 
 if [[ -d "$(dirname "$upstream")" ]] && date=$(git -C "$(dirname "$upstream")" log -1 --format=%cs -- "$upstream" 2>/dev/null) && [[ -n "$date" ]]; then
@@ -47,4 +53,4 @@ if [[ -n "$missing" ]]; then
     sed 's/^/  - /' <<<"$missing"
     exit 1
 fi
-echo "PASS: all $total upstream headings covered (${#whitelist[@]} whitelisted)"
+echo "PASS: all $total upstream headings covered (${#whitelist[@]} whitelisted, ${#checked[@]} sections left to the checkers)"

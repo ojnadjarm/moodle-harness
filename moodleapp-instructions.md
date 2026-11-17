@@ -20,13 +20,13 @@ and https://moodledev.io/general/app/development/development-guide (offline:
 ```bash
 git clone https://github.com/moodlehq/moodleapp.git ~/moodleapp
 cd ~/moodleapp
-node --version                        # must be 24.x
+node --version                        # 24.x
 nice -n 19 npm ci --no-audit --no-fund  # postinstall: patch-package + cordova-plugin-moodleapp deps
 ```
 
 - `npm warn allow-scripts` for esbuild/lmdb/core-js is harmless if
   `npx esbuild --version` works afterwards.
-- Check: `ls cordova-plugin-moodleapp/node_modules` must exist.
+- Check that `cordova-plugin-moodleapp/node_modules` exists.
 
 ## Run (headless dev server)
 
@@ -35,10 +35,8 @@ cd ~/moodleapp
 npm run serve:test     # NODE_ENV=testing ionic serve --no-open
 ```
 
-- Serves http://localhost:8100. Never `npm start`: it passes `--ssl` and
-  `--browser=$MOODLE_APP_BROWSER` and opens a headed browser.
-- Drive it headless (Playwright MCP). First compile takes minutes; wait for
-  the compiled message (`wait-for`), not a sleep.
+- Serves http://localhost:8100. Use it rather than `npm start`, which passes
+  `--ssl` and `--browser=$MOODLE_APP_BROWSER` and opens a headed browser.
 - Gulp runs before serve/build (lang files, env from `moodle.config.json`).
 - For plugin work you do not need a build: use https://main.apps.moodledemo.net
   or https://latest.apps.moodledemo.net in headless Chromium.
@@ -97,13 +95,13 @@ The 23 delegates: `moodle-ci/reference/mobile-delegates.json`.
 
 ```bash
 NODE_ENV=testing npx gulp            # if assets are stale
-nice -n 19 npx jest <path>           # one test file; never the full `npm test`
+nice -n 19 npx jest <path>           # one test file; the full `npm test` is too heavy
 nice -n 19 npx eslint <path>
 ```
 
 ## Troubleshooting
 
-- "Unsupported engine" or odd build errors → `node --version` must be 24.x.
+- "Unsupported engine" or odd build errors → `node --version` should print 24.x.
 - Build out-of-memory → use the npm scripts (`npm run build`); they set
   `--max-old-space-size=8192`.
 - Port 8100 busy → `npx ionic serve --no-open --port=<other>`.
