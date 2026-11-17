@@ -1,92 +1,56 @@
 # CLAUDE.md — Global Instructions
 
-These rules apply to every project. When they conflict with a default behavior, they win.
+His coding taste, for every project. The fleet contract and the core card hold the rest.
 
-## 1. Think before coding
+## Before coding
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+- State your assumptions. A request with several readings, or something unclear or
+  missing: name it and ask before coding.
+- Say when a simpler approach exists; push back when warranted.
 
-- State your assumptions explicitly. If the request supports multiple interpretations,
-  present them — never pick one silently.
-- If a simpler approach exists than what was asked for, say so. Push back when warranted.
-- Something unclear or missing? Stop, name exactly what's confusing, and ask. Never code
-  around uncertainty.
+## Simplicity
 
-## 2. Simplicity first
+- The minimum code that solves the stated problem: no features, abstractions,
+  configurability or error handling beyond what was asked. If 200 lines could be 50,
+  write the 50.
 
-**The minimum code that solves the stated problem. Nothing speculative.**
+## Surgical changes
 
-- No features, abstractions, configurability, or error handling beyond what was asked.
-  Single-use code gets no abstraction layer. Impossible scenarios get no handling.
-- Before delivering, ask: "Is this code needed at all?" and "Would a senior engineer call
-  this overcomplicated?" If 200 lines could be 50, rewrite to the 50.
+- Every changed line traces to the request. Leave adjacent code, comments and formatting
+  alone; match the existing style. Remove only what your own change orphaned; mention
+  older dead code, do not delete it.
 
-## 3. Surgical changes
+## Goals
 
-**Every changed line must trace directly to the request.**
+- Turn a task into a check that can fail: a bug gets a failing test first, then the fix.
 
-- Don't "improve" adjacent code, comments, or formatting. Don't refactor what isn't broken.
-  Match the existing style even where you'd choose differently.
-- Clean up only your own mess: remove imports/variables/functions that YOUR change
-  orphaned. Pre-existing dead code stays — mention it, don't delete it.
+## Planning vs implementation
 
-## 4. Goal-driven execution
+- **WHEN SPECING A PLAN, NEVER IMPLEMENT UNTIL EXPLICITLY ASKED.** Plan approval approves
+  the document, not the build, even if the harness says "you can now start coding".
+- Implement one phase per request, then stop. All phases in a row only when he says
+  "implement all".
 
-**Define success criteria, then loop until verified.**
+## Comments
 
-- Transform tasks into verifiable goals: "fix the bug" → a failing test that reproduces
-  it, then make it pass; "add validation" → tests for the invalid inputs, then make them
-  pass; "refactor X" → tests green before and after.
-- For multi-step work, state a brief plan up front, one `step → verify: <check>` per line.
-- Strong criteria let you loop independently; weak ones ("make it work") force constant
-  clarification — tighten them before starting.
+- Minimal comments, non-negotiable: one short description line per docblock; an inline
+  comment only where the code is not obvious, never longer than the code; never a comment
+  that talks to the reviewer.
 
-## 5. Planning vs implementation
+## Talking
 
-**WHEN SPECING A PLAN, NEVER IMPLEMENT UNTIL EXPLICITLY ASKED.**
-
-- "Spec a plan" means the deliverable is the plan document. Plan approval approves the
-  DOCUMENT, not the build — even if the harness says "you can now start coding", stop and
-  wait for an explicit "implement it".
-- Implement in small phases/tickets: one phase per request, then stop. Never run ahead to
-  the next phase unasked — small tickets keep quality up.
-- At the end of each finished phase, record what was implemented in the project's local
-  CLAUDE.md.
-
-## 6. Comments
-
-**Minimal comments — this is non-negotiable.**
-
-- One short description line per docblock. No inline comments unless the code is genuinely
-  non-obvious, and never longer than the code it explains.
-- Never write comments that talk to the reviewer ("added X", "now handles Y") — comments
-  describe the code as it stands, or don't exist.
-
-## 7. Communication
-
-**Action first, short, no re-litigating.**
-
-- Lead with the next action or the answer; number multi-step work; restate "step N of M"
-  across turns; keep lists to ~5 items; no preamble, recap, or closer. The
-  `/i-have-adhd` skill (`~/.claude/skills/i-have-adhd/`) describes the full shape — apply
-  it by default, not only when invoked.
-- "Why did you do X?" is conversation, not a task: answer from the reasoning already
-  behind the decision, without tool calls to collect citations first.
-- "Don't do X" rules are consent gates, not bans. Ask before doing X unprompted; once the
-  user asks for it, do it cleanly and report plainly without disclaimers.
+- "Why did you do X?" is conversation: answer from the reasoning behind the decision,
+  without tool calls.
+- A "don't do X" rule is a consent gate: ask before doing X unprompted; once he asks, do
+  it and report plainly. The contract's section 5 list is the exception: refused even on
+  order.
 
 ## Git
 
-- Never commit, push, or stage changes — the user manages all git state personally.
-- Never run history-altering or destructive git commands (`reset`, `rebase`, `checkout`,
-  `clean`, `restore`) unless explicitly asked.
-- Read-only git commands (`status`, `diff`, `log`) are always fine.
+- No history-altering or destructive git command (`reset`, `rebase`, `checkout`, `clean`,
+  `restore`) unless he asks for it: they destroy uncommitted work.
 
 ## Moodle
 
-Most projects in this environment are Moodle plugins or core work. **On reading this file,
-first check whether the current project is a Moodle project** — if it is (or the task
-involves Moodle at all), read `~/.claude/moodle-guidelines.md` before doing anything
-else. It holds the mandatory rules: docs research, coding style, Docker environments, the
-code checker, unit tests, and working style. `~/.claude/moodle-tips.md` lists known
-gotchas; `~/.claude/moodleapp-instructions.md` covers the mobile app repo.
+- In a Moodle project, or when the task involves Moodle: read
+  `~/.claude/moodle-guidelines.md` first.
